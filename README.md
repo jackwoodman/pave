@@ -15,3 +15,7 @@ Currently supported systems:
   
 Required libraries:
   - Adafruit BMP180 -> https://github.com/adafruit/Adafruit_Python_BMP.git
+
+
+
+Repl.it -> [![Run on Repl.it](https://repl.it/badge/github/jackwoodman/vega)](https://repl.it/github/jackwoodman/vega)
