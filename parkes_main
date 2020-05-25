@@ -1,0 +1,109 @@
+# Parkes UI
+# Commented-out code is stuff that'll only run on the flight computer, at the moment it's been tweaked for testing in IDE
+#from subprocess import Popen, PIPE
+from time import sleep
+"""from datetime import datetime
+import board
+import digitalio
+import adafruit_character_lcd.character_lcd as characterlcd
+
+lcd_columns = 16
+lcd_rows = 2
+
+lcd_rs = digitalio.DigitalInOut(board.D22)
+lcd_en = digitalio.DigitalInOut(board.D17)
+lcd_d4 = digitalio.DigitalInOut(board.D25)
+lcd_d5 = digitalio.DigitalInOut(board.D24)
+lcd_d6 = digitalio.DigitalInOut(board.D23)
+lcd_d7 = digitalio.DigitalInOut(board.D18)
+
+display = characterlcd.Character_LCD_Mono(lcd_rs, lcd_en, lcd_d4, lcd_d5, lcd_d6, lcd_d7, lcd_columns, lcd_rows)
+"""
+parkes_version = 0.1
+
+def startup():
+    sleep(1)
+    startup_display = ("PARKES v" + str(parkes_version) + "     ", "    loading     ")
+    update_display(startup_display)
+    sleep(3)
+    startup_display = ("                ", "READY           ")
+    update_display(startup_display)
+    sleep(1)
+
+def launch():
+    launch_options = ["ARM VEGA", "LAUNCH  "]
+    current_select = 1
+    while True:
+        top_left = "LAUNCH:    "
+        top_right = "  " + str(current_select) + "/" +str(len(launch_options))
+        top_line = top_left + top_right
+        bottom_line = "=> " + launch_options[current_select - 1] + "    "
+        launch_menu_display = (top_line, bottom_line)
+        update_display(launch_menu_display)
+
+        choose = str(input())
+        if choose == " ":
+            if current_select != len(launch_options):
+                current_select += 1
+            else:
+                current_select = 1
+        elif choose == "b":
+            main_menu()
+    
+    
+
+def main_menu():
+    main_menu_options = ["CONFIG ", "CONNECT", "LAUNCH "]
+    
+    current_select = 1
+    while True:
+        top_left = "PARKES v" + str(parkes_version)     # 11 chr
+        top_right = "  " + str(current_select) + "/" +str(len(main_menu_options))
+        top_line = top_left + top_right
+        bottom_line = "=> " + main_menu_options[current_select - 1] + "      "
+        main_menu_display = (top_line, bottom_line)
+        update_display(main_menu_display)
+
+        choose = str(input())
+        if choose == " ":
+            if current_select != len(main_menu_options):
+                current_select += 1
+            else:
+                current_select = 1
+        else:
+            if current_select == 3:
+                launch()
+        
+        
+    
+def update_display(display_input):
+    top_line, bottom_line = display_input
+    print()
+    print(" ________________")
+    print("|" + str(top_line) + "|")
+    print("|" + str(bottom_line) + "|")
+    print("|________________|")
+    print()
+    
+
+startup()
+sleep(1)
+main_menu()
+
+"""
+def update_display(top_line, bottom_line):
+    # Checks length of top and bottom line
+    # If suitable, combines and updates display
+    # Else, returns error code
+
+    display.clear()
+
+    if len(top_line) <= 16 and len(bottom_line) <= 16:
+        send_to_display = top_line + bottom_line
+        display.message = send_to_display
+        return 1
+    else:
+        return 0
+"""
+    
+    
