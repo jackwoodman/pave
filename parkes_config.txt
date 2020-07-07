@@ -16,7 +16,7 @@ Current count is 9
 ! connected=False
 ! con_type="None"
 ! armed=False
-! parkes_vers=0.3
+! parkes_vers=0.4
 
 $expected_value.init
 $expected_value.set=9
