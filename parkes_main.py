@@ -1,31 +1,33 @@
+#PARKES MASTER 0.4
 # Parkes UI
 
 from time import sleep
+import time
 from random import randint
 import threading
-##from datetime import datetime
-##from RPLCD.gpio import CharLCD
-##import RPi.GPIO as GPIO
+from datetime import datetime
+from RPLCD.gpio import CharLCD
+import RPi.GPIO as GPIO
+import serial
 
-# To-Do:
-
-#  
+# Hot edit is whether the current Parkes is formatted for live deployment. False is simulation only
+hot_edit = True
 
 
 """ cha cha real smooth """
 
 
 
-##lcd = CharLCD(cols=16, rows=2, pin_rs=37, pin_e=35, pins_data=[33, 31, 29, 23], numbering_mode=GPIO.BOARD)
+lcd = CharLCD(cols=16, rows=2, pin_rs=37, pin_e=35, pins_data=[33, 31, 29, 23], numbering_mode=GPIO.BOARD)
 
-parkes_version = 0.3
-##GPIO.setwarnings(False)
-##GPIO.setmode(GPIO.BOARD)
+parkes_version = 0.4
+GPIO.setwarnings(False)
+GPIO.setmode(GPIO.BOARD)
 ##
 ### Button setup
-##GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Back button - GPIO 23
-##GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Select button - GPIO 24
-##GPIO.setup(22, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Cycle button - GPIO 25
+GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Back button - GPIO 23
+GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Select button - GPIO 24
+GPIO.setup(22, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Cycle button - GPIO 25
 
 global configuration
 
@@ -115,7 +117,12 @@ def error(e_code):
         error("E199")
         
         
-    
+def confirm(message):
+    topline = format_length(message)
+    bottomline = "      |OK|      "
+    confirm_disp = (topline, bottomline)
+    update_display(confirm_disp)
+    wait_select()
     
 
 def format_length(input_string, length=16, remove_vowel=False):
@@ -385,6 +392,14 @@ def con_shutdown():
         configuration["go_reboot"] = False
         configuration["go_kill"] = True
 
+
+def con_about():
+    # About the program
+    about_display = (format_length("PARKES v" + str(parkes_version), 16), format_length("novae space 2020"))
+    update_display(about_display)
+    wait_select()
+    
+
 def con_cursor():
     # Config: manually reset cursor
     result = yesno("RESET CURSOR")
@@ -473,22 +488,40 @@ def check_vamp_tuple(vamp):
         if vamp_lengths[vamp.index(element)] != len(str(element)):
             error("E123")
     
-    
-
+def cne_open_port():
+    global parkes_radio
+    # Opens the default port for Parkes transceiver
+    parkes_radio = serial.Serial(
+        port = "/dev/serial0",
+        baudrate = 9600,
+        parity = serial.PARITY_NONE,
+        stopbits = serial.STOPBITS_ONE,
+        bytesize = serial.EIGHTBITS,
+        
+        # You might need a timeout here if it doesn't work, try a timeout of 1 sec
+        )
 def cne_send(vamp):
     # Sends command over radio
     try:
         v, a, m, p = vamp
     except:
         error("E121")
-    command = "v"+str(v)+"_a"+str(a)+"_m"+str(m)+"_p"+str(p)
+    command = "v"+str(v)+"_a"+str(a)+"_m"+str(m)+"_p"+str(p)+"\n"
+    command = command.encode()
+    parkes_radio.write(command)
 
-    print(command)
+def cne_receive():
+    # Listens for a vamp from Vega. Simples
+    data = parkes_radio.read_until()
+    to_return = data
+    to_return = to_return.decode()
+    return to_return
+
 
 def cne_vamp_destruct(vamp):
     vamp_decom = []
     for element in vamp.split("_"):
-        vamp_decom = element[1:]
+        vamp_decom.append(element[1:])
 
     try:
         v, a, m, p = vamp_decom
@@ -497,26 +530,33 @@ def cne_vamp_destruct(vamp):
     vamp = (int(v), int(a), int(m), int(p))
      
     return vamp
-
+    
 
 def cne_heartbeat():
     # Heatbeat func - will be threading
     configuration["telemetry"]["hb_active"] = True
+    configuration["telemetry"]["hb_force_kill"] = False
     receiving = True
     heartbeat_init_vamp = (10000, 0000, 8, 00000)
 
     cne_send(heartbeat_init_vamp)
     hb_count = 0
+    if hb_count < 0:
+        error("E251")
+        hb_count = 0
     
     while configuration["telemetry"]["hb_force_kill"] == False:
-        rec_string = "received data"  # PLACEHOLDER
+        rec_string = cne_receive() 
         rec_vamp = cne_vamp_destruct(rec_string)
         configuration["telemetry"]["hb_data"].append(rec_vamp)
+        configuration["telemetry"]["hb_pid"] = rec_vamp[3]
         sleep(1)
         
         hb_count += 1
-        
-        configuration["telemetry"]["hb_sigstrn"] = hb_count // rec_vamp[3]
+        try:
+            configuration["telemetry"]["hb_sigstrn"] = (hb_count / rec_vamp[3]) * 100
+        except:
+            has_failed = True
 
     configuration["telemetry"]["hb_active"] = False
     configuration["telemetry"]["hb_data"] = []
@@ -525,37 +565,167 @@ def cne_heartbeat():
 
 def cne_heartbeat_thread():
     force_kill = False
+    global cne_hb_thread
     # Moves the heartbeat function into its own function
-    cne_hb_thread = theading.Thead(target=cne_heartbeat)
+    cne_hb_thread = threading.Thread(target=cne_heartbeat)
     cne_hb_thread.start()
+
+
+def cne_heartbeat_confirmation():
+    rec_con = False
+    while rec_con == False:
+        result = cne_receive()
+        if "v10000_a1000_m8_p" in str(result):
             
+            rec_con = True
+            return rec_con
+        
+
+def dsp_handshake(status):
+    # Displays current handshake status in a fun and easy to read way kill me please
+    if status == False:
+        topline = format_length("</3 - HB OFF")
+        bottom_line = format_length(" P-----/x/----V ")
+        dsp = (topline, bottom_line)
+        update_display(dsp)
+
+    if status == True:
+        topline = format_length("<3 - HB ON")
+        bottom_line = format_length(" P------------V" )
+        dsp = (topline, bottom_line)
+        update_display(dsp)
+        
+        sleep(1)
+
+        for t in range(3):
+            for i in range(0, 12):
+                start = ""
+                for x in range(i):
+                    start += "="
+                start += ">"
+
+                for y in range(12-(i+1)):
+                    start += "-"
+                bottom_line = " P"+start+"V "
+                topline = format_length("<3 - HB ON")
+                dsp = (topline, bottom_line)
+                update_display(dsp)
+                sleep(0.1)
+            
+        confirm("HANDSHAKE GOOD")
+        
+
+     
 
 def cne_handshake():
     global configuration
+    dsp_handshake(False)
     handshake_confirmed = False
-
+    
     configuration["telemetry"]["active"] = True
-
+    sleep(3)
     # Set handshake vamp
     handshake_vamp = (10000, 1000, 0, 00000)
 
     # Loop to send handshake / await response
-    while handshake_confirmed == False:
-        cne_send(handshake_vamp)
+    cne_send(handshake_vamp)
 
-        if received_confirmation is True:   # PLACEHOLDER
-            handshake_confirmed = True
-
+    # Might need to put some sort of stopper here, in case it just steamrolls ahead
+    handshake_confirmed = cne_heartbeat_confirmation()
+    dsp_handshake(True)
+    
     cne_heartbeat_thread()
 
 def cne_kill_heartbeat():
     # Finish the heartbeat thread
-    cne_hb_thread.join()
+    global configuration
     configuration["telemetry"]["hb_force_kill"] = True
+    cne_hb_thread.join()
+    
 
-def cne_connect():
+def dsp_hb_view(status):
+    if status == True:
+        desired_time = 10
+        run_view = True
+        top_line = format_length("HEARTBEAT:  LIVE")
+        init_time = time.time()
+        while run_view == True:
+            
+            sig = str(int(configuration["telemetry"]["hb_sigstrn"])) + "%"
+            if len(sig) < 4:
+                sig = " "+sig
+            final_sig = "sig:"+sig
+            
+            pid = configuration["telemetry"]["hb_pid"]
+            builder = ""
+            for i in range(5-len(str(pid))):
+                builder += "0"
+            builder += str(pid)
+            final_pid = "P:"+builder
+            bottom_line = final_sig + " " + final_pid
+            hb_ciew = (top_line, bottom_line)
+            update_display(hb_ciew)
+            time_diff = time.time() - init_time
+            if time_diff > 10:
+                run_view = False
+    elif status == False:
+        confirm("HEARTBEAT DEAD")
+
+    else:
+        error("E252")
+        
+
+def cne_hb_view():
+    if configuration["telemetry"]["hb_active"] == True:
+        dsp_hb_view(True)
+    else:
+        dsp_hb_view(False)
+
+def cne_hb_kill():
+    if configuration["telemetry"]["hb_active"] == True:
+        go_kill = yesno("KILL HRTBT?")
+        if go_kill == True:
+            cne_kill_heartbeat()
+            confirm("HEARTBEAT DEAD")
+    else:
+        error("E250")
+
+def cne_hb_menu():
     global configuration
 
+    hb_func_dict = {
+        1 : ["HB VIEW", cne_hb_view],
+        2 : ["HB KILL", cne_hb_kill],
+        }
+
+    current_select = 1
+    while True:
+
+        current_func_name, current_func = hb_func_dict[current_select]
+        
+        top_line = format_length("HEARTBEAT:  " + str(current_select) + "/" +str(len(hb_func_dict)))
+        bottom_line = "=> " + format_length(current_func_name, 12)  # IF THIS BREAKS, ITS THE FUCKING FORMAT_LENGTH FUNC
+        hb_menu_display = (top_line, bottom_line)
+        update_display(hb_menu_display)
+
+        choose = button_input()
+        if choose == "cycle":
+            if current_select != len(hb_func_dict):
+                current_select += 1
+            else:
+                current_select = 1
+        elif choose == "back":
+            break
+        elif choose == "select":
+            if current_select == 7:
+                current_func()
+            else:
+                current_func()
+    
+    
+def cne_connect():
+    global configuration
+    cne_open_port()
     cne_handshake()
     configuration["telemetry"]["connected"] = True
     
@@ -564,8 +734,9 @@ def connect():
     global configuration
 
     connect_func_dict = {
-        1 : ["CONNECT", cne_connect],
-        2 : ["STATUS", cne_status]
+        1 : ["HANDSHAKE", cne_connect],
+        2 : ["STATUS", cne_status],
+        3 : ["HEARTBEAT", cne_hb_menu]
         }
 
     current_select = 1
@@ -605,7 +776,8 @@ def config():
         4 : ["CONFIG VALUES", con_display],
         5 : ["REBOOT", con_reboot],
         6 : ["ERROR TEST", con_etest],
-        7 : ["SHUTDOWN", con_shutdown]
+        7 : ["SHUTDOWN", con_shutdown],
+        8 : ["ABOUT", con_about]
         }
 
         
