@@ -15,6 +15,8 @@ Currently supported systems:
   
 Required libraries:
   - Adafruit BMP180 -> https://github.com/adafruit/Adafruit_Python_BMP.git
+  - PySerial
+  - A good sense of humour
 
 
 
