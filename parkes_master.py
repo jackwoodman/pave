@@ -1,6 +1,8 @@
 #PARKES MASTER 0.4
 # Parkes UI
 
+# Iteration Version 0.4.8
+
 from time import sleep
 import time
 from random import randint
@@ -9,21 +11,18 @@ from datetime import datetime
 from RPLCD.gpio import CharLCD
 import RPi.GPIO as GPIO
 import serial
+from math import floor
+
 
 # Hot edit is whether the current Parkes is formatted for live deployment. False is simulation only
 hot_edit = True
 
-
 """ cha cha real smooth """
-
-
-
 lcd = CharLCD(cols=16, rows=2, pin_rs=37, pin_e=35, pins_data=[33, 31, 29, 23], numbering_mode=GPIO.BOARD)
 
 parkes_version = 0.4
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BOARD)
-##
 ### Button setup
 GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Back button - GPIO 23
 GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Select button - GPIO 24
@@ -195,7 +194,7 @@ def Pupdate_display(display_input):
     # If suitable, combines and updates display
     # Else, returns error code
     top_line, bottom_line = display_input
-
+    lcd.clear()
 
     if len(top_line) <= 16 and len(bottom_line) <= 16:
         send_to_display = top_line + bottom_line
@@ -326,43 +325,12 @@ def startup():
     update_display(startup_display)
     sleep(1)
 
-def launch_launch():
-    if_we_ever = "have to use this i'll be surprised"
-    error("E001")
 
 
-def launch_arm():
-    this_one = "will hopefully be used god forbid"
-    error("E001")
 
-def launch():
 
-    launch_func_dict = {
-        1 : ["ARM VEGA", launch_arm],
-        2 : ["LAUNCH", launch_launch]
-        }
-    
-    current_select = 1
-    while True:
-        current_func_name, current_func = launch_func_dict[current_select]
 
-        top_line = "LAUNCH:      " + str(current_select) + "/" +str(len(launch_func_dict))
-        bottom_line = "=> " + format_length(current_func_name, 13)
-        launch_menu_display = (top_line, bottom_line)
-        update_display(launch_menu_display)
 
-        choose = button_input()
-        if choose == "cycle":
-            if current_select != len(launch_func_dict):
-                current_select += 1
-            else:
-                current_select = 1
-        elif choose == "back":
-            break
-        elif choose == "select":
-            current_func()
-
-        # Exit to menu, don't write below here
 
 def con_delay():
     # Config: set delay for button input recog
@@ -505,6 +473,7 @@ def cne_send(vamp):
     try:
         v, a, m, p = vamp
     except:
+        print(vamp)
         error("E121")
     command = "v"+str(v)+"_a"+str(a)+"_m"+str(m)+"_p"+str(p)+"\n"
     command = command.encode()
@@ -526,8 +495,9 @@ def cne_vamp_destruct(vamp):
     try:
         v, a, m, p = vamp_decom
     except:
+        print(vamp)
         error("E120")
-    vamp = (int(v), int(a), int(m), int(p))
+    vamp = (floor(float(v)), floor(float(a)), int(m[1]), int(p))
      
     return vamp
     
@@ -584,14 +554,14 @@ def cne_heartbeat_confirmation():
 def dsp_handshake(status):
     # Displays current handshake status in a fun and easy to read way kill me please
     if status == False:
-        topline = format_length("</3 - HB OFF")
+        topline = format_length("  <|3 - HB OFF  ")
         bottom_line = format_length(" P-----/x/----V ")
         dsp = (topline, bottom_line)
         update_display(dsp)
 
     if status == True:
-        topline = format_length("<3 - HB ON")
-        bottom_line = format_length(" P------------V" )
+        topline = format_length("  <3 - HB ON  ")
+        bottom_line = format_length(" P------------V ")
         dsp = (topline, bottom_line)
         update_display(dsp)
         
@@ -606,7 +576,7 @@ def dsp_handshake(status):
 
                 for y in range(12-(i+1)):
                     start += "-"
-                bottom_line = " P"+start+"V "
+                bottom_line = format_length(" P"+start+"V ")
                 topline = format_length("<3 - HB ON")
                 dsp = (topline, bottom_line)
                 update_display(dsp)
@@ -625,7 +595,7 @@ def cne_handshake():
     configuration["telemetry"]["active"] = True
     sleep(3)
     # Set handshake vamp
-    handshake_vamp = (10000, 1000, 0, 00000)
+    handshake_vamp = (10000, 1000, 8, 00000)
 
     # Loop to send handshake / await response
     cne_send(handshake_vamp)
@@ -639,6 +609,7 @@ def cne_handshake():
 def cne_kill_heartbeat():
     # Finish the heartbeat thread
     global configuration
+    parkes_radio.write("v10000_a1000_m8_p00000\n".encode())
     configuration["telemetry"]["hb_force_kill"] = True
     cne_hb_thread.join()
     
@@ -666,6 +637,7 @@ def dsp_hb_view(status):
             hb_ciew = (top_line, bottom_line)
             update_display(hb_ciew)
             time_diff = time.time() - init_time
+            sleep(0.1)
             if time_diff > 10:
                 run_view = False
     elif status == False:
@@ -808,6 +780,78 @@ def config():
         # Exit to menu, don't write below here
     # Exit to menu, don't write below here
 
+
+def lch_force_launch():
+    cne_open_port()
+    # Forces launch, skipping prep and arm phase. Used for testing only. May be removed from use
+    error("E210")
+    force_vamp = (10000, 1000, 2, 00000)
+    confirm("FORCE CMMND SENT")
+    
+    # Loop to send handshake / await response
+    cne_send(force_vamp)
+    sleep(0.2)
+    lch_downlink()
+
+
+def lch_arm():
+    cne_open_port()
+    arm_vamp = (10000, 1000, 0, 00000)
+    # Loop to send handshake / await response
+    cne_send(arm_vamp)
+
+
+def lch_downlink():
+    flight_downlink = []
+    modetype = {
+        0 : " VEGA IDLE      ",
+        1 : " ARMED & READY  ",
+        2 : " POWERED FLIGHT ",
+        3 : " UNPWRED FLIGHT ",
+        4 : " BALLISTIC DESC ",
+        5 : " PARACHUTE DESC ",
+        6 : " LANDED & SAFE  ",
+        7 : " ERROR / UNKNWN "
+        }
+    # Designed as a lightweight function to display data directly
+    while True:
+        incoming = parkes_radio.read_until()
+        v,a,m,p = cne_vamp_destruct(incoming.decode())
+        flight_downlink = (modetype[m], "V:"+str(v)+"  A:"+str(a)+"m")
+        update_display(flight_downlink)
+        
+        
+
+def launch():
+
+    launch_func_dict = {
+        1 : ["ARM VEGA", lch_arm],
+        2 : ["LAUNCH", lch_force_launch],
+        3 : ["DOWNLINK", lch_downlink]
+        }
+    
+    current_select = 1
+    while True:
+        current_func_name, current_func = launch_func_dict[current_select]
+
+        top_line = "LAUNCH:      " + str(current_select) + "/" +str(len(launch_func_dict))
+        bottom_line = "=> " + format_length(current_func_name, 13)
+        launch_menu_display = (top_line, bottom_line)
+        update_display(launch_menu_display)
+
+        choose = button_input()
+        if choose == "cycle":
+            if current_select != len(launch_func_dict):
+                current_select += 1
+            else:
+                current_select = 1
+        elif choose == "back":
+            break
+        elif choose == "select":
+            current_func()
+
+        # Exit to menu, don't write below here
+
         
 def main_menu():
     # Parkes: main menu selection 
@@ -908,7 +952,7 @@ while configuration["go_reboot"] is True and configuration["go_kill"] is False:
     run_startup_test = True
     expected_value = 0
     configuration["go_reboot"] = False
-    config_file = open("parkes_config.txt", "r")
+    config_file = open("/home/pi/Desktop/parkes_config.txt", "r")
     config_lines = config_file.readlines()
 
 
@@ -939,7 +983,6 @@ while configuration["go_reboot"] is True and configuration["go_kill"] is False:
         # Configuration Import Commands
         elif entry[0] == "$":
             command = entry[1:]
-            print(command)
             if "." in command:
                 split_command = command.split(".")
 
@@ -1002,3 +1045,4 @@ while configuration["go_reboot"] is True and configuration["go_kill"] is False:
 
 shutdown_process()
 lcd.clear()
+
