@@ -1,8 +1,12 @@
-# vega
-Vega is flight software in early development for avionics systems. 
+# pave
+Parkes Vega - or PAVE - is flight software in early development for avionics systems. 
 Short term goals include:
   - Flight data recording
   - Avionics data logging
+  
+  
+Parkes is the ground software with which the user interacts with the PAVE system
+Vega is the flight software that records and reports flight data
 
 Long term goals include:
   - TVC control
@@ -13,7 +17,7 @@ Currently supported systems:
   - Pion Avionics System (In development)
   - WS_AC (In development)
   
-Required libraries:
+Required libraries: (NEEDS UPDATING)
   - Adafruit BMP180 -> https://github.com/adafruit/Adafruit_Python_BMP.git
   - PySerial
   - A good sense of humour
