@@ -4,8 +4,6 @@ Parkes Configuration File
 [$] denotes a runtime command
 
 
-$start_setup
-
 Current count is 9
 
 ! rep_delay=0.1
@@ -16,8 +14,11 @@ Current count is 9
 ! connected=False
 ! con_type="None"
 ! armed=False
-! parkes_vers=0.4
+! parkes_vers=0.5
 
+$home_dir.set=/home/pi/Desktop/
+$error_log.clear
+$error_log.init
 $expected_value.init
 $expected_value.set=9
 $telemetry.init
