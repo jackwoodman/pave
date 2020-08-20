@@ -1,4 +1,4 @@
-
+#vfs
 
 '''
     ==========================================================
@@ -18,6 +18,8 @@ from time import sleep
 import math
 import threading
 import serial
+
+vega_version = 0.4
 # The following assumes we only have an altimeter. Need to add config file support for dedicated accelerometer
 
 #============RULES============
@@ -30,14 +32,22 @@ import serial
 # Look who hasn't learnt his lesson and is using global variables again
 global flight_data
 global data_store
+global configuration
 import time
 
 flight_data = {}
 test_shit = {}
 data_store = []
 bmp_sensor = BMP085.BMP085()
+receiving_command = True
+configuration = {
+    "beep_vol" : 5,
+    "debug_mode" : True
+}
 
-vega_version = 0.3
+
+
+
 
 def get_temp():
         return bmp_sensor.read_temperature()
@@ -61,24 +71,33 @@ def get_press_sea():
     That was a monumental waste of time. The homemade time functions are saved in the local
     backup of vega in case I'm wrong twice over.
     """
-init_time = time.time()
+
 
 global error_log
 global flight_log
 
 error_log, flight_log = [], []
 
+
+def file_append(target_file, data):
+    # VFS File Appending Tool
+    opened_file = open(target_file, "a")
+    opened_file.write(data + "\n")
+    opened_file.close()
+
 def file_init(target_file, title):
+    # VFS File Creation Tool
     top_line = f"========== {title} ==========\n"
-    bottom_line = "-" * len(top_line) + "\n"
+    bottom_line = "=" * (len(top_line)-1) + "\n"
     new_file = open(target_file, "w")
     new_file.write(top_line)
-    new_file.write("Vega Version: " + str(vega_version)+"\n")
+    new_file.write("VEGA v " + str(vega_version)+"\n")
     new_file.write(bottom_line)
-    new_file.write("")
+    new_file.write(" \n")
     new_file.close()
 
 def flight_log_unload(flight_log):
+    # VFS Flight Log Unloader Tool
     flight_log_title = "vega_flightlog.txt"
     file_init(flight_log_title, "VEGA FLIGHT LOG")
     log_file = open(flight_log_title, "a")
@@ -168,7 +187,7 @@ def armed():
 
     # Initialising stuff
     armed_alt = get_alt()
-    flight_logger("armed_alt: " + str(armed_alt)", duration())
+    flight_logger("armed_alt: " + str(armed_alt), duration())
     flight_logger("entering arm loop", duration())
     while True:
         current_alt = get_alt()
@@ -239,9 +258,10 @@ def bmp_debug():
         sleep(0.7)
 
 def demo_loop():
+    # This entire function is some demo bullshit and will be removed when the connection issue
+    # has been solved. Ignore it. Seriously.
     global data_store
-    data_id = 0
-    demo_vel, demo_alt, current_modetype = 0, 0, 0
+    data_id, demo_vel, demo_alt, current_modetype = 0, 0, 0, 0
 
     while True:
         #data_store.append((flight_data["current_time"], data_id))
@@ -289,7 +309,7 @@ def send(vamp):
     try:
         v, a, m, p = vamp
     except:
-        error("E121")
+        error("E310")
     command = "v"+str(v)+"_a"+str(a)+"_m"+str(m)+"_p"+str(p)+"\n"
     vega_radio.write(command.encode())
 
@@ -314,6 +334,54 @@ def vamp_destruct(vamp):
 
     return vamp
 
+def set_beep(value):
+    global configuration
+    configuration["beep_vol"] = int(value)
+
+def set_debug(value):
+    global configuration
+    try:
+        if value == "True":
+            configuration["debug_mode"] = True
+        else:
+            configuration["debug_mode"] = False
+        return True
+    except:
+        return False
+
+def config_update(data):
+    target, value = data[0], data[1:]
+
+    function_definitions = {
+        "A" : set_beep,
+        "B" : set_debug
+    }
+    try:
+        return function_definitions[target](value)
+
+    except:
+        return False
+
+
+def receive_config():
+    new_command = vega_radio.read_until().decode().split("|")
+    flight_logger("UPDATING CONFIG", duration())
+    con_count, con_list = 0, ""
+
+    for update in new_command:
+        result = config_update(update)
+
+        if result:
+            con_count += 1
+            con_list += "|" + update
+
+
+    return_update = str(con_count) + "." + con_list
+    flight_logger(return_update, duration())
+    vega_radio.write(return_update.encode())
+    flight_logger("CONFIG UPDATE COMPLETE", duration())
+
+
 
 def heartbeat():
     global vega_radio
@@ -331,8 +399,7 @@ def heartbeat():
     heartbeat_loop = True
     while heartbeat_loop:
         to_send = "v10000_a1000_m8_p"
-        to_send = to_send + str(beat).zfill(5)
-        to_send = to_send + "\n"
+        to_send = to_send + str(beat).zfill(5) + "\n"
 
         vega_radio.write(to_send.encode())
         sleep(0.6)
@@ -341,41 +408,60 @@ def heartbeat():
         check_kill = ""
         check_kill = vega_radio.read_until().decode()
         if "v10000_a1000_m8_p" in check_kill:
+            flight_logger("heartbeat() kill acknowledged", duration())
             heartbeat_loop = False
+        if "config_update" in check_kill:
+            flight_logger("config_update acknowledged", duration())
+            receive_config()
 
     vega_radio.timeout = None
 
 
-# STARTUP
+def arm():
+    flight_logger("DEBUG: disabled rec_command", duration())
+    armed()
 
+def heartbeat_init():
+    flight_logger("heartbeat command received", duration())
+    vega_radio.write("v10000_a1000_m8_p00000\n".encode())
+    heartbeat()
+
+def force_launch():
+    flight_logger("FORCING LAUNCH", duration())
+    flight_logger("LAUNCH DETCTED", duration())
+    vel_start()
+    flight()
+    
+    
+
+
+# STARTUP
+init_time = time.time()
+flight_logger("vega flight system - startup", duration())
+flight_logger("initialising vfs - verison: " + str(vega_version), duration())
 open_port()
-receiving_command = True
+time.sleep(1)
+flight_logger("port open", duration())
+
+command_dict = {
+    0 : arm,
+    2 : force_launch,
+    3 : demo_loop,
+    8 : heartbeat_init,
+    
+}
 
 
 while receiving_command:
+    flight_logger("RECEIVING COMMAND...", duration())
+            
+    new_command = vamp_destruct(receive())
+    flight_logger("COMMAND: " + new_command, duration())
 
-    new_command = vega_radio.read_until().decode()
+    target_program = new_command[2]
+    command_dict[target_program]()
+    
 
-    if "v10000_a1000_m8_p" in new_command:
-        flight_logger("heartbeat command received", duration())
-        vega_radio.write("v10000_a1000_m8_p00000\n".encode())
 
-        heartbeat()
 
-    elif "v10000_a1000_m0_p" in new_command:
-        receiving_command = False
-        flight_logger("NC: "+ new_command, duration())
-        flight_logger("DEBUG: disabled rec_command", duration())
 
-    elif "v10000_a1000_m2_p" in new_command:
-        #--- TO BE REMOVED ---
-        flight_logger("FORCING LAUNCH", duration())
-        flight_logger("LAUNCH DETCTED", duration())
-        vel_start()
-        flight()
-
-    elif "v10000_a1000_m3_p" in new_command:
-        #--- TO BE REMOVED ---
-        demo_loop()
-
-armed()
