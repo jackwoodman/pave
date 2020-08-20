@@ -1,4 +1,4 @@
-# Parkes 0.5
+# pgs
 
 '''
     ==========================================================
@@ -22,6 +22,9 @@ from RPLCD.gpio import CharLCD
 
 # hot_run defines whether Parkes will run using hardware or simulation.
 hot_run = True
+# tested keeps track of if the current version has been live tested
+tested = False
+
 parkes_version = 0.5
 
 
@@ -39,8 +42,27 @@ GPIO.setup(22, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Cycle button - GPIO 25
 global configuration
 configuration = {
     "go_reboot": True,
-    "go_kill": False
+    "go_kill": False,
+    "vfs_update_queue": []
     }
+
+def sys_file_append(target_file, data):
+    # File appending tool, imported from VFS 0.3
+    opened_file = open(target_file, "a")
+    opened_file.write(data + "\n")
+    opened_file.close()
+
+def sys_file_init(target_file, title):
+    # File creation tool, imported from VFS 0.3
+    top_line = f"========== {title} ==========\n"
+    bottom_line = "-" * len(top_line) + "\n"
+    new_file = open(target_file, "w")
+    new_file.write(top_line)
+    new_file.write("Parkes Version: " + str(parkes_version) + "\n")
+    new_file.write(bottom_line)
+    new_file.write("")
+    new_file.close()
+
 
 def dsp_vowel_remover(word):
     # This function removes vowels from words.
@@ -62,7 +84,7 @@ def dsp_vowel_remover(word):
 # Parkes Error Handler 2.0
 #====================PEH 2.0====================#
 def dsp_error_nonfatal(code):
-    topline = "ERROR:  " + format_length(code, 8)
+    top_line = "ERROR:  " + format_length(code, 8)
     current_select = False
 
     while True:
@@ -71,8 +93,7 @@ def dsp_error_nonfatal(code):
         else:
             bottom_line = " RBT / |SHUTDWN|"
 
-        nf_display = (topline, bottom_line)
-        update_display(nf_display)
+        update_display(top_line, bottom_line)
 
         choose = button_input()
         if choose == "cycle":
@@ -90,18 +111,18 @@ def dsp_error_nonfatal(code):
                 break
 
 def dsp_error_fatal(code):
-    topline = "ERROR:  " + format_length(code, 8)
+    top_line = "ERROR:  " + format_length(code, 8)
     bottom_line = " FATAL ERROR    "
-    yesno_display = (topline, bottom_line)
-    update_display(yesno_display)
+
+    update_display(top_line, bottom_line)
     while True:
         waiting = True
 
 def dsp_error_warning(code):
-    topline = "ERROR:  " + format_length(code, 8)
+    top_line = "ERROR:  " + format_length(code, 8)
     bottom_line = "   |CONTINUE|   "
-    yesno_display = (topline, bottom_line)
-    update_display(yesno_display)
+
+    update_display(top_line, bottom_line)
     wait_select()
 
 def dsp_error_passive(code):
@@ -127,18 +148,16 @@ def error(e_code, data=None):
 
     # Error display
     if e_code[1] in error_codes.keys():
-        error_file = open("parkes_errorlog.txt", "a")
+
         new_error = "- " + error_codes[e_code[1]][1] + " ("+str(e_code)+")"
 
         if data:
             new_error += " => "
             new_error += str(data)
-            new_error += "\n"
-        else:
-            new_error += "\n"
+
         print(new_error)
-        error_file.write(new_error)
-        error_file.close()
+        sys_file_append("parkes_errorlog.txt", new_error)
+
         error_type(e_code)
     else:
         error("E199", e_code)
@@ -153,8 +172,7 @@ def dsp_menu(func_dict, menu_title):
         title = menu_title + ":"
         top_line = format_length(menu_title, 13) + str(current_select) + "/" + str(len(func_dict))
         bottom_line = "=> " + format_length(current_func_name, 12)
-        menu_display = (top_line, bottom_line)
-        update_display(menu_display)
+        update_display(top_line, bottom_line)
         choose = button_input()
 
         if choose == "cycle":
@@ -168,10 +186,9 @@ def dsp_menu(func_dict, menu_title):
             current_func()
 
 def confirm(message):
-    topline = format_length(message)
-    bottomline = "      |OK|      "
-    confirm_disp = (topline, bottomline)
-    update_display(confirm_disp)
+    top_line = format_length(message)
+    bottom_line = "      |OK|      "
+    update_display(top_line, bottom_line)
     wait_select()
 
 def format_length(input_string, length=16, remove_vowel=False):
@@ -215,9 +232,7 @@ def button_input():
     else:
         error("E107")
 
-
-def update_display(to_display):
-    top_line, bottom_line = to_display
+def update_display(top_line, bottom_line):
 
     if hot_run:
         if len(top_line) <= 16 and len(bottom_line) <= 16:
@@ -226,6 +241,9 @@ def update_display(to_display):
             return 1
         else:
             error("E203")
+            send_to_display = format_length(top_line) + format_length(bottom_line)
+            lcd.write_string(send_to_display)
+            return 1
 
     elif not hot_run:
         print()
@@ -241,20 +259,23 @@ def update_display(to_display):
 
 def hardware_button_input():
     # Input detection for flight mode
-    button_pressed = ""
+    sleep_delay = configuration["rep_delay"]
+    print("awaiting input...")
     while True:
-        print("input_hold")
 
         if GPIO.input(16) == GPIO.HIGH:
-            print("back")
+            print("input detected: back")
+            sleep(sleep_delay)
             return "back"
         if GPIO.input(18) == GPIO.HIGH:
-            print("select")
+            print("input detected: select")
+            sleep(sleep_delay)
             return "select"
         if GPIO.input(22) == GPIO.HIGH:
-            print("cycle")
+            print("input detected: cycle")
+            sleep(sleep_delay)
             return "cycle"
-    sleep(configuration["rep_delay"])
+
 
 
 def software_button_input():
@@ -275,7 +296,6 @@ def hardware_update_display(display_input):
     # If suitable, combines and updates display
     # Else, returns error code
     top_line, bottom_line = display_input
-    #lcd.clear()
 
     if len(top_line) <= 16 and len(bottom_line) <= 16:
         send_to_display = format_length(top_line) + format_length(bottom_line)
@@ -297,12 +317,12 @@ def software_update_display(display_input):
 def num_select(message, values):
     # Basic number selection UI, returns integer value
     current_num = values[0]
-    topline = message
+    top_line = message
     builder = [values[0]]
     original = values
     count = 0
     for i in range(16 - len(message)):
-        topline += " "
+        top_line += " "
 
     while True:
         for number in original:
@@ -322,8 +342,7 @@ def num_select(message, values):
         for element in first_six:
             bottom_line += str(element) + " "
 
-        num_display = (topline, bottom_line)
-        update_display(num_display)
+        update_display(top_line, bottom_line)
 
         choose = button_input()
         if choose == "cycle":
@@ -346,9 +365,9 @@ def wait_select():
 
 def yesno(message):
     # Basic bool select function, returns bool value
-    topline = message
+    top_line = message
     for i in range(16 - len(message)):
-        topline += " "
+        top_line += " "
     current_select = False
     while True:
         if current_select == True:
@@ -356,8 +375,7 @@ def yesno(message):
         else:
             bottom_line = "     Y / |N|    "
 
-        yesno_display = (topline, bottom_line)
-        update_display(yesno_display)
+        update_display(top_line, bottom_line)
 
         choose = button_input()
         if choose == "cycle":
@@ -367,10 +385,7 @@ def yesno(message):
                 current_select = True
 
         elif choose == "select":
-            if current_select == True:
-                return True
-            elif current_select == False:
-                return False
+            return current_select
 
         elif choose == "back":
             break
@@ -390,8 +405,7 @@ def sys_startup_animation():
             filler += " "
         start_string = "  |" + filler + "|  "
 
-        startup_display = (format_length("PARKES v" + str(parkes_version), 16), start_string)
-        update_display(startup_display)
+        update_display(format_length("PARKES v" + str(parkes_version), 16), start_string)
         count += 1
         sleep(time_del)
 
@@ -399,13 +413,11 @@ def sys_startup_animation():
 def sys_startup():
 
     sleep(1)
-    startup_display = (format_length("PARKES v" + str(parkes_version), 16),  format_length("loading", 16))
-    update_display(startup_display)
+    update_display(format_length("PARKES v" + str(parkes_version), 16),  format_length("loading", 16))
     sleep(0.4)
 
     sys_startup_animation()
-    startup_display = (format_length("", 16), format_length(" READY", 16))
-    update_display(startup_display)
+    update_display(format_length("", 16), format_length(" READY", 16))
     sleep(1)
 
 def con_delay():
@@ -439,8 +451,8 @@ def con_shutdown():
 
 def con_about():
     # About the program
-    about_display = (format_length("PARKES v" + str(parkes_version), 16), format_length("novae space 2020"))
-    update_display(about_display)
+    top_line, bottom_line = format_length("PARKES v" + str(parkes_version), 16), format_length("novae space 2020")
+    update_display(top_line, bottom_line)
     wait_select()
 
 
@@ -468,12 +480,11 @@ def con_display():
     while True:
         bottom_line = ""
         current_sel = str(current+1) + "/"+str(len(configuration))
-        topline = format_length("CONFG VALS: ", 16 - len(current_sel)) + current_sel;
+        top_line = format_length("CONFG VALS: ", 16 - len(current_sel)) + current_sel;
 
         current_con = conf_list[current]
         con_line = bottom_line + format_length(current_con + ": " + str(configuration[current_con]), 16)
-        config_dis = (topline, con_line)
-        update_display(config_dis)
+        update_display(top_line, con_line)
         choose = button_input()
 
         if choose == "cycle":
@@ -501,12 +512,12 @@ def cne_status():
     while True:
         bottom_line = ""
         current_sel = str(current+1) + "/"+str(len(cne_list))
-        topline = format_length("CNCT VALS: ", 16 - len(current_sel)) + current_sel;
+        top_line = format_length("CNCT VALS: ", 16 - len(current_sel)) + current_sel;
 
         current_con = cne_list[current]
         con_line = bottom_line + format_length(current_con + ": " + str(configuration["telemetry"][current_con]), 16)
-        config_dis = (topline, con_line)
-        update_display(config_dis)
+
+        update_display(top_line, con_line)
         choose = button_input()
 
         if choose == "cycle":
@@ -567,6 +578,8 @@ def cne_receive(override_timeout=False):
         to_return = to_return.decode()
         vamp_decom = []
         parkes_radio.timeout = None
+        print(to_return)
+        print(to_return.split("_"))
         for element in to_return.split("_"):
             vamp_decom.append(element[1:])
         try:
@@ -574,6 +587,7 @@ def cne_receive(override_timeout=False):
             vamp = (floor(float(v)), floor(float(a)), int(m), int(p))
             return to_return
         except:
+            print(vamp_decom)
             return "timeout"
 
     # Listens for a vamp from Vega. Simples
@@ -655,16 +669,15 @@ def cne_heartbeat_confirmation():
 def dsp_handshake(status):
     # Displays current handshake status in a fun and easy to read way kill me please
     if status == False:
-        topline = format_length("  <|3 - HB OFF  ")
+        top_line = format_length("  <|3 - HB OFF  ")
         bottom_line = format_length(" P-----/x/----V ")
-        dsp = (topline, bottom_line)
-        update_display(dsp)
+
+        update_display(top_line, bottom_line)
 
     if status == True:
-        topline = format_length("  <3 - HB ON  ")
+        top_line = format_length("  <3 - HB ON  ")
         bottom_line = format_length(" P------------V ")
-        dsp = (topline, bottom_line)
-        update_display(dsp)
+        update_display(top_line, bottom_line)
 
         sleep(1)
 
@@ -678,9 +691,8 @@ def dsp_handshake(status):
                 for y in range(12-(i+1)):
                     start += "-"
                 bottom_line = format_length(" P"+start+"V ")
-                topline = format_length("<3 - HB ON")
-                dsp = (topline, bottom_line)
-                update_display(dsp)
+                top_line = format_length("<3 - HB ON")
+                update_display(top_line, bottom_line)
                 sleep(0.1)
 
         confirm("HANDSHAKE GOOD")
@@ -713,6 +725,63 @@ def cne_kill_heartbeat():
     configuration["telemetry"]["hb_force_kill"] = True
     cne_hb_thread.join()
 
+def cne_vfs_updater(target, value):
+    # Takes the target config to chane, and the value to set it to
+    global configuration
+    target_dict = {
+        "beep_vol"  : "A",
+        "debug_mode": "B"
+    }
+    command = target_dict[target] + str(value)
+    configuration["vfs_update_queue"].append(command)
+
+
+def cne_upload_config(params):
+    # Take the current list of update params and send to Vega
+    dsp_upload_config("uploading")
+    command, param_len = "", len(params)
+    param_count = 0
+    for update in params:
+        param_count += 1
+        command += "|" + update
+    command += "\n"
+    parkes_radio.write(command.encode())
+    sleep(0.5)
+    confirmation = parkes_radio.read_until().decode()
+
+    con_count, con_list = confirmation.split(".")
+    if int(con_count) != param_count:
+        if int(con_count) == 0:
+            dsp_upload_config("total")
+            error("E320")
+        else:
+            dsp_upload_config("partial", (con_count, str(param_count)))
+            message = con_count + "/" + str(param_count) + " updates complete"
+            error("E321", message)
+    else:
+        dsp_upload_config("complete")
+
+
+def dsp_upload_config(status, data=False):
+    top_line = format_length("VFS UPDATE TOOL")
+    if status == "uploading":
+        bottom_line = "uploading..."
+    elif status == "complete":
+        bottom_line = "complete!"
+    elif status == "partial":
+        if data:
+            con_count, param_coun = data
+            fract = con_count + "/" + param_count
+            bottom_line = "partial: "+ data
+        else:
+            bottom_line = "partial: unknown"
+            error("E322")
+    elif status == "total":
+        bottom_line = "failed to update"
+
+    update_display(top_line, format_length(bottom_line))
+
+
 
 def dsp_hb_view(status):
     if status == True:
@@ -734,8 +803,7 @@ def dsp_hb_view(status):
             builder += str(pid)
             final_pid = "P:"+builder
             bottom_line = final_sig + " " + final_pid
-            hb_ciew = (top_line, bottom_line)
-            update_display(hb_ciew)
+            update_display(top_line, bottom_line)
             time_diff = time.time() - init_time
             sleep(0.1)
             if time_diff > 10:
@@ -774,11 +842,67 @@ def cne_hb_menu():
     # Exit to menu, don't write below here
 
 
+
+
 def cne_connect():
     global configuration
     cne_open_port()
     cne_handshake()
     configuration["telemetry"]["connected"] = True
+
+def cne_vfs_beep():
+    new_val =str(num_select("SELECT VOLUME:", [1,2,3,4,5,6,7,8,9]))
+    if new_val != "!":
+        cne_vfs_updater("beep_vol", new_val)
+        sleep(0.2)
+
+def cne_vfs_debug():
+    set_debug = yesno("SET DEBUG?")
+    if set_debug:
+        cne_vfs_updater("debug_mode", "True")
+    else:
+        cne_vfs_updater("debug_mode", "False")
+    sleep(0.2)
+
+def cne_vfs_config():
+
+    cne_vfs_dict = {
+        1 : ["BEEP", cne_vfs_beep],
+        2 : ["DEBUG", cne_vfs_debug]
+    }
+
+    #cne_vfs_updater(target, value)
+    dsp_menu(cne_vfs_dict, "VFS CONFIG")
+    # Exit to menu, don't write below here
+
+
+def cne_vfs_update():
+    global configuration
+    if yesno("UPDATE VFS?"):
+        cne_upload_config(configuration["vfs_update_queue"])
+        confirm("UPDATE COMPLETE")
+
+def cne_vfs_compiler():
+    cne_open_port()
+    compile_vamp = (10000, 1000, 7, 00000)
+    confirm("VFS LOG COMPILER")
+
+    # Loop to send handshake / await response
+    cne_send(compile_vamp)
+
+
+def cne_vfs_menu():
+    global configuration
+
+    vfs_config_dict = {
+        1 : ["CONFIG", cne_vfs_config],
+        2 : ["UPDATE", cne_vfs_update],
+        3 : ["COMPILER", cne_vfs_compiler]
+        }
+
+    dsp_menu(vfs_config_dict, "VFS CONFIG")
+    # Exit to menu, don't write below here
+
 
 
 def sys_connect():
@@ -787,7 +911,8 @@ def sys_connect():
     connect_func_dict = {
         1 : ["HANDSHAKE", cne_connect],
         2 : ["STATUS", cne_status],
-        3 : ["HEARTBEAT", cne_hb_menu]
+        3 : ["HEARTBEAT", cne_hb_menu],
+        4 : ["VFS CONFIG", cne_vfs_menu]
         }
 
     dsp_menu(connect_func_dict, "CONNECT")
@@ -865,8 +990,7 @@ def lch_downlink():
         try:
             v,a,m,p = cne_vamp_destruct(incoming.decode())
 
-            flight_downlink = (modetype[m], "V:"+str(v)+"  A:"+str(a)+"m")
-            update_display(flight_downlink)
+            update_display(modetype[m], "V:"+str(v)+"  A:"+str(a)+"m")
         except:
             error("E310", incoming.decode())
 
@@ -905,16 +1029,14 @@ def sys_main_menu():
 def sys_shutdown_process():
 
     sleep(1)
-    startup_display = ("PARKES v" + str(parkes_version) + "     ", format_length("shutting down", 16))
-    update_display(startup_display)
+    top_line, bottom_line = "PARKES v" + str(parkes_version) + "     ", format_length("shutting down", 16)
+    update_display(top_line, bottom_line)
     error("E900", "Shutdown process initiated")
     sleep(4)
 
-
-    startup_display = (format_length("", 16), format_length(" done", 16))
+    top_line, bottom_line = format_length("", 16), format_length(" done", 16)
     error("E901", "Shutdown process complete")
-    update_display(startup_display)
-
+    update_display(top_line, bottome_line)
     sleep(2)
 
 def sys_type_get(newval):
@@ -995,12 +1117,7 @@ def cfg_telemetry(data):
 
 def cfg_errlog(data):
     if data == "init":
-        new_file = open("parkes_errorlog.txt", "w")
-        new_file.write("========== PARKES ERROR LOG ==========\n")
-        new_file.write("Parkes Version: " + str(configuration["parkes_vers"])+"\n")
-        new_file.write("--------------------------------------\n")
-        new_file.write("")
-        new_file.close()
+        sys_file_init("parkes_errorlog.txt", "PARKES ERROR LOG")
 
     elif data == "clear":
         new_file = open("parkes_errorlog.txt", "w")
@@ -1018,8 +1135,6 @@ def cfg_exval(data):
             error("E102", value)
     else:
         error("E103", data)
-
-
 
 def cfg_run_command(target, command):
     command_funcs = {
@@ -1088,13 +1203,12 @@ def sys_startup_test():
             error("E101")
 
 
-
 # Main running loop
 while configuration["go_reboot"] is True and configuration["go_kill"] is False:
     global run_startup_test
     global exptected_value
     run_startup_test, expected_value, configuration["go_reboot"] = True, 0, False
-    config_file = open("/home/pi/Desktop/parkes_config.txt", "r")
+    config_file = open("/home/pi/parkes_config.txt", "r")
     #config_lines = config_file.readlines()
 
     sys_config_interpreter(config_file)
@@ -1105,6 +1219,7 @@ while configuration["go_reboot"] is True and configuration["go_kill"] is False:
     config_file.close()
     sys_startup()
     sleep(1)
+    lcd.clear()
     sys_main_menu()
 
 sys_shutdown_process()
