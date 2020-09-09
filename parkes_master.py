@@ -1,4 +1,5 @@
 # pgs
+# internal verion 0.5.2
 
 '''
     ==========================================================
@@ -23,7 +24,7 @@ from RPLCD.gpio import CharLCD
 # hot_run defines whether Parkes will run using hardware or simulation.
 hot_run = True
 # tested keeps track of if the current version has been live tested
-tested = False
+tested = True
 
 parkes_version = 0.5
 
@@ -34,10 +35,16 @@ lcd.clear()
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BOARD)
 
-# Defining Hardware Buttons
-GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Back button - GPIO 23
-GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Select button - GPIO 24
-GPIO.setup(22, GPIO.IN, pull_up_down=GPIO.PUD_DOWN) # Cycle button - GPIO 25
+# Defining Hardware Input
+GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Back button - GPIO 23
+GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Select button - GPIO 24
+GPIO.setup(22, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Cycle button - GPIO 25
+GPIO.setup(13, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Arm key - GPIO 27
+GPIO.setup(11, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Launch button - GPIO 17
+
+
+# Defining Hardware Output
+GPIO.setup(12, GPIO.OUT) # Ignition Output - GPIO 18
 
 global configuration
 configuration = {
@@ -45,6 +52,31 @@ configuration = {
     "go_kill": False,
     "vfs_update_queue": []
     }
+
+
+def sys_check_arm():
+    if GPIO.input(13) == GPIO.LOW:
+        return True
+    else:
+        return False
+
+def sys_check_launch():
+    if GPIO.input(11) == GPIO.LOW:
+        return True
+    else:
+        return False
+
+def sys_check_cont():
+    return True
+
+def sys_fire(arm, ignition):
+    if arm and ignition:
+        GPIO.output(12, GPIO.HIGH)
+        sleep(5)
+        GPIO.output(12, GPIO.LOW)
+
+
+
 
 def sys_file_append(target_file, data):
     # File appending tool, imported from VFS 0.3
@@ -263,15 +295,15 @@ def hardware_button_input():
     print("awaiting input...")
     while True:
 
-        if GPIO.input(16) == GPIO.HIGH:
+        if GPIO.input(16) == GPIO.LOW:
             print("input detected: back")
             sleep(sleep_delay)
             return "back"
-        if GPIO.input(18) == GPIO.HIGH:
+        if GPIO.input(18) == GPIO.LOW:
             print("input detected: select")
             sleep(sleep_delay)
             return "select"
-        if GPIO.input(22) == GPIO.HIGH:
+        if GPIO.input(22) == GPIO.LOW:
             print("input detected: cycle")
             sleep(sleep_delay)
             return "cycle"
@@ -418,7 +450,7 @@ def sys_startup():
 
     sys_startup_animation()
     update_display(format_length("", 16), format_length(" READY", 16))
-    sleep(1)
+    sleep(1.2)
 
 def con_delay():
     # Config: set delay for button input recog
@@ -559,6 +591,7 @@ def cne_open_port():
 
         # You might need a timeout here if it doesn't work, try a timeout of 1 sec
         )
+
 def cne_send(vamp):
     # Sends command over radio
     try:
@@ -882,9 +915,7 @@ def cne_vfs_update():
         cne_upload_config(configuration["vfs_update_queue"])
         confirm("UPDATE COMPLETE")
 
-def cne_vfs_compiler():
-    cne_open_port()
-    compile_vamp = (10000, 1000, 7, 00000)
+    compile_vamp = (10000, 1000, 4, 00000)
     confirm("VFS LOG COMPILER")
 
     # Loop to send handshake / await response
@@ -939,6 +970,195 @@ def sys_config():
     # Exit to menu, don't write below here
 
 
+def lch_hotfire():
+    # Used for testing engines without the tests
+
+    sure_go = yesno("RUN HOTFIRE?")
+    error("E290")
+    top_line = format_length("HOTFIRE ACTIVE")
+    bottom_line = "   |CONTINUE|   "
+    update_display(top_line, bottom_line)
+    wait_select()
+    sleep(2)
+
+    top_line = format_length("DISARMED")
+    bottom_line = format_length("key to arm...")
+    hold, armed = True, False
+
+
+    while hold:
+        update_display(top_line, bottom_line)
+        if sys_check_arm():
+            top_line = format_length("ARMED!")
+            bottom_line = format_length("ready...")
+            armed = True
+        else:
+            top_line = format_length("DISARMED")
+            bottom_line = format_length("key to arm...")
+            armed = False
+
+        if armed and sys_check_launch():
+            hold = False
+        sleep(0.2)
+
+    top_line = format_length("AUTOSEQUENCE")
+    bottom_line = format_length("-----active-----")
+    update_display(top_line, bottom_line)
+
+    sleep(4)
+    # COUNTDOWN
+    continue_launch = True
+    for count in range(11):
+        current = str(10 - count).zfill(2)
+        top_line = format_length("    COUNTDOWN   ")
+        bottom_line = format_length("      |"+current+"|      ")
+        update_display(top_line, bottom_line)
+        sleep(0.95)
+        if not sys_check_arm():
+            top_line = format_length("DISARMED")
+            bottom_line = format_length("ending countdown")
+            update_display(top_line, bottom_line)
+            sleep(3)
+            continue_launch = False
+            break
+
+    if continue_launch:
+        sys_fire(sys_check_arm(), True)
+        top_line = format_length("    COUNTDOWN   ")
+        bottom_line = format_length("    ignition    ")
+        sleep(10)
+
+
+def lch_flight_configure():
+    # Parkes flight configuration set
+    GPIO.output(12, GPIO.LOW)
+
+    return True
+
+
+def lch_preflight():
+    # Parkes onboard checks
+
+    # Check configured for flight
+    if not lch_flight_configure():
+        return "lch_flight_configure() failed"
+
+    # Check system armed
+    if not sys_check_arm():
+        return "disarm detected"
+
+    # Check ignition continuity
+    if not sys_check_cont():
+        return "discontinuity in ignition loop detected"
+
+    # Check UART port is open
+    if not parkes_radio.is_open():
+        return "parkes_radio port is closed"
+
+    # Checks heartbeat has been disabled
+    if configuration["telemetry"]["hb_active"] == True:
+        return "heartbeat is active"
+
+    # Check system armed
+    if not sys_check_arm():
+        return "disarm detected"
+
+    # Check ignition pin is LOW
+    if not GPIO.input(12):
+        return "ignition pin was not pulled low"
+
+    return True
+
+
+def lch_quick_check():
+    # This gets run during the countdown
+
+    # Check continuity
+    if not sys_check_cont():
+        return "discontinuity in ignition loop detected"
+
+    # Check system armed
+    if not sys_check_arm():
+        return "disarm detected"
+
+    return True
+
+def lch_countdown():
+    sleep(2)
+    continue_launch = True
+
+    for second in range(11):
+        current = str(10 - count).zfill(2)
+        top_line = format_length("    COUNTDOWN   ")
+        bottom_line = format_length("      |"+current+"|      ")
+        update_display(top_line, bottom_line)
+
+        qc_results = lch_quick_check()
+        if not qc_results:
+            continue_launch = False
+            error("E295", qc_results)
+            sleep(3)
+            break
+        sleep(0.95)
+        qc_results = lch_quick_check()
+        if not qc_results:
+            continue_launch = False
+            error("E295", qc_results)
+            sleep(3)
+            break
+
+
+    if continue_launch:
+        sys_fire(sys_check_arm(), True)
+        top_line = format_length("    COUNTDOWN   ")
+        bottom_line = format_length("    ignition    ")
+        error("E999", "ignition")
+        wait_select()
+
+def lch_launch_program():
+    sure_go = yesno("COMMIT LAUNCH?")
+    if not sure_go:
+        break
+
+    # Ask for flight configuration and preflight checks
+    pf_results = lch_preflight()
+
+    if pf_results != True:
+        error("E291", pf_results)
+        break
+
+    # Time to ask Vega to launch_poll
+    v, a, m, p = "00000", "0000", "0", "00000"
+    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+    parkes_radio.write(command.encode())
+
+    vega_confirmed = vamp_destruct(receive())
+    if vega_confirmed[2] != 0:
+        error("E294", str(vega_confirmed))
+        break
+
+    sleep(0.4)
+    vega_poll_results = vamp_destruct(receive())
+
+    if vega_poll_results[3] == "11111":
+        error("E292", str(vega_poll_results))
+        break
+
+    elif vega_poll_results[3] == "00000":
+        error("E990", "vega is configured for flight")
+
+    else:
+        error("E293", str(vega_poll_results))
+        break
+
+    sleep(2)
+    error("E998", "launch countdown commit")
+
+    lch_countdown()
+
+
+
+
 def lch_force_launch():
     cne_open_port()
     # Forces launch, skipping prep and arm phase. Used for testing only. May be removed from use
@@ -963,14 +1183,11 @@ def lch_loop():
     sleep(0.2)
     lch_downlink()
 
-
 def lch_arm():
     cne_open_port()
     arm_vamp = (10000, 1000, 0, 00000)
     # Loop to send handshake / await response
     cne_send(arm_vamp)
-
-
 
 def lch_downlink():
     flight_downlink = []
@@ -992,7 +1209,7 @@ def lch_downlink():
 
             update_display(modetype[m], "V:"+str(v)+"  A:"+str(a)+"m")
         except:
-            error("E310", incoming.decode())
+            error("E311", incoming.decode())
 
 
 def sys_launch():
@@ -1000,8 +1217,9 @@ def sys_launch():
     launch_func_dict = {
         1 : ["ARM VEGA", lch_arm],
         2 : ["LAUNCH", lch_force_launch],
-        3 : ["DOWNLINK", lch_downlink],
-        4 : ["LCH LOOP", lch_loop]
+        3 : ["HOTFIRE", lch_hotfire],
+        4 : ["DOWNLINK", lch_downlink],
+        5 : ["LCH LOOP", lch_loop]
         }
 
     current_select = 1
@@ -1056,7 +1274,7 @@ def sys_type_get(newval):
             else:
                 return "bool"
 
-def sys_startup_test(ex_value, config_vals):
+def sys_startup_tests(ex_value, config_vals):
     # Startup test functions, don't fuck with these
 
     if len(config_vals) != ex_value:
@@ -1111,7 +1329,7 @@ def cfg_telemetry(data):
     if data == "init":
         configuration["telemetry"] = {}
 
-    elif data == "set":
+    elif "set" in data:
         if "default" in data:
             configuration["telemetry"] = {"active": False, "connected": False, "sig_strength": 0, "hb_active": False, "hb_data":[], "hb_sigstrn":0, "hb_force_kill": False}
 
@@ -1195,7 +1413,7 @@ def sys_startup_test():
         "c_v_failure"  :  "E103",
         "c_f_failure"  :  "E106"
         }
-    passed_test, reason = sys_startup_test(expected_value, configuration)
+    passed_test, reason = sys_startup_tests(expected_value, configuration)
 
     if passed_test is True and reason in startup_errors.keys():
             error(startup_errors[reason], "startup_error: " + reason)
@@ -1218,9 +1436,10 @@ while configuration["go_reboot"] is True and configuration["go_kill"] is False:
 
     config_file.close()
     sys_startup()
-    sleep(1)
     lcd.clear()
     sys_main_menu()
+
+
 
 sys_shutdown_process()
 lcd.clear()
