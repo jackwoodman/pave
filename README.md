@@ -4,24 +4,26 @@ Short term goals include:
   - Flight data recording
   - Avionics data logging
   
-  
-Parkes is the ground software with which the user interacts with the PAVE system
-Vega is the flight software that records and reports flight data
+# outline of PAVE:
 
-Long term goals include:
-  - TVC control
-  - Pyro control
+Parkes Ground Software:
+ - user interface for the PAVE system
+ - live telemetry downlink over radio
+ - launch control
+ - configuration of all involved systems
+ - error handling and display
 
+Vega Flight Software:
+ - flight data recording
+ - live data downlink over radio
+ - flight comms links
+ 
+Prelude Launch Software:
+ - commands ignition of up to three engines simultaneously
+ - controls launch clamps, LEDS, and other launchpad functionality
+ - receives launch commands from Parkes wirelessly, negates need for wires
+ - serves as secondary antenna, closer to launchpad
 
-Currently supported systems:
-  - Pion Avionics System (In development)
-  - WS_AC (In development)
-  
-Required libraries: (NEEDS UPDATING)
-  - Adafruit BMP180 -> https://github.com/adafruit/Adafruit_Python_BMP.git
-  - PySerial
-  - A good sense of humour
-
-
+Codebases are shared between systems where possible, with system management and radio communication protocols identical between the three.
 
 Repl.it -> [![Run on Repl.it](https://repl.it/badge/github/jackwoodman/vega)](https://repl.it/github/jackwoodman/vega)
