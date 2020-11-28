@@ -2,7 +2,7 @@
 
 '''
     ==========================================================
-    Vega Flight Software, version 0.3
+    Vega Flight Software, version 0.4.1
     Copyright (C) 2020 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
