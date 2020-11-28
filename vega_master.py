@@ -2,7 +2,7 @@
 
 '''
     ==========================================================
-    Vega Flight Software, version 0.4
+    Vega Flight Software, version 0.3
     Copyright (C) 2020 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
@@ -19,7 +19,8 @@ import math
 import threading
 import serial
 
-vega_version = 0.4
+vega_version = 0.4.1
+comp_id = 0
 # The following assumes we only have an altimeter. Need to add config file support for dedicated accelerometer
 
 #============RULES============
@@ -42,11 +43,9 @@ bmp_sensor = BMP085.BMP085()
 receiving_command = True
 configuration = {
     "beep_vol" : 5,
-    "debug_mode" : True
+    "debug_mode" : True,
+    "rocket_data" : ["CALLISTO II", 3.5, 4]
 }
-
-
-
 
 
 def get_temp():
@@ -91,12 +90,12 @@ def file_init(target_file, title):
     bottom_line = "=" * (len(top_line)-1) + "\n"
     new_file = open(target_file, "w")
     new_file.write(top_line)
-    new_file.write("VEGA v " + str(vega_version)+"\n")
+    new_file.write("VEGA v" + str(vega_version)+"\n")
     new_file.write(bottom_line)
     new_file.write(" \n")
     new_file.close()
 
-def flight_log_unload(flight_log):
+def flight_log_unload(flight_log, done=True):
     # VFS Flight Log Unloader Tool
     flight_log_title = "vega_flightlog.txt"
     file_init(flight_log_title, "VEGA FLIGHT LOG")
@@ -106,7 +105,8 @@ def flight_log_unload(flight_log):
         log, timestamp = tuple
         log_file.write(f"- {timestamp} : {log}\n")
 
-    log_file.write("END OF LOG\n")
+    if done:
+        log_file.write("END OF LOG\n")
     log_file.close()
 
 def error_unload(error_list):
@@ -163,6 +163,21 @@ def altitude():
     """ Logs current alt to flight_data"""
     flight_data["altitude"] = get_alt()
 
+def flight_status():
+    global flight_data
+    while True:
+        status = ""
+        start_alt = get_alt()
+        sleep(5)
+        if get_alt() > start_alt:
+            status = 0
+        elif get_alt() < start_alt:
+            status = 1
+        elif abs(get_alt() - start_alt) < 4:
+            status = 2
+
+        flight_data["status"] = status
+
 
 
 # Multi-threading Functions
@@ -172,6 +187,12 @@ def vel_start():
     velocity_thread = threading.Thread(target=estimate_velocity)
     velocity_thread.start()
 
+def status_start():
+    status_thread = threading.Thread(target=flight_status)
+    status_thread.start()
+
+
+
 def alt_start():
     altitude_thread = threading.Thread(target=altitude)
     altitude_thread.start()
@@ -179,55 +200,103 @@ def alt_start():
 
 # Flight functions
 
+def auto_sequence():
+    v, a, m, p = "00000", "0000", "0", "20000"
+    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+    vega_radio.write(command.encode())
+    armed()
+
+def pre_flight():
+    return True
+
+def go_launch():
+    pf_checks = pre_flight()
+    if pf_checks:
+        return True
+    else:
+        return pf_checks
+
 def armed():
+    global configuration
+    # Confirm received:
+    v, a, m, p = "00000", "0000", "0", "20000"
+    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+    vega_radio.write(command.encode())
+
+
     flight_logger("armed() initated", duration())
     # Update parkes
-    vega_radio.write("v00000_a0000_m1_p00000".encode())
+
+    flight_logger("armed_alt: " + str(get_alt()), duration())
 
 
-    # Initialising stuff
-    armed_alt = get_alt()
-    flight_logger("armed_alt: " + str(armed_alt), duration())
-    flight_logger("entering arm loop", duration())
-    while True:
-        current_alt = get_alt()
-        # This might need some boundary adjustments becuase fuck dude
-        if current_alt - armed_alt > 2:
-            flight_logger("LAUNCH DETECTED", duration())
-            break
-    timer_start()
-    vel_start()
-    alt_start()
-    flight_logger("all multithreads succesful", duration())
-    flight_data["flight_record"] = flight()
-
-
-
-# Data structure = [timestamp, altitude, velocity, data id]
-def flight():
-    flight_logger("flight() initated", duration())
-    # This function is the main flight loop. Let's keep things light boys
-    global data_store
-    flight_data["status"] = "flight"
-    data_id = 0
-    recent_command = "v10000_a1000_m8_p1"
-
-    # THIS WILL BE MOVED TO ARMED()
     attempts = []
     for attempt in range(3):
         attempts.append(bmp_sensor.read_altitude())
     calibrated_alt = sum(attempts) // 3
-    flight_logger("calibrated_alt: " + str(calibrated_alt), 00.00)
+    calibrated_acc = 0
+    flight_logger("calibrated_alt: " + str(calibrated_alt), duration())
+    flight_logger("entering arm loop", duration())
 
 
-    # THIS WILL BE MOVED TO ARMED()
-    last_a = bmp_sensor.read_altitude() - calibrated_alt
-    launch_time = time.time()
+    flight_logger("go/no-go poll running...", duration())
+    launch_poll = go_launch()
+
+    if launch_poll == True:
+        # send vega is ready
+        v, a, m, p = "00000", "0000", "1", "20000"
+        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+        vega_radio.write(command.encode())
+        flight_logger("poll result: GO", duration())
+    else:
+        # send vega not ready
+        v, a, m, p = "00000", "0000", "1", "21111"
+        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+        vega_radio.write(command.encode())
+        flight_logger("poll result: NO GO", duration())
+        flight_logger("go_launch() returned: "+ launch_poll, duration())
+        error_logger("Exxx")
+        break
+
+    flight_log_unload(flight_log, False)
+    flight_log = []
+
+    vel_start()
+    status_start()
+    flight_logger("all multithreads succesful", duration())
+    flight_data["flight_record"] = flight(calibrated_alt, calibrated_acc)
+
+
+
+# Data structure = [timestamp, altitude, velocity, data id]
+def flight(calib_alt, calib_acc):
+    global configuration
+    flight_logger("flight() initated", duration())
+    # This function is the main flight loop. Let's keep things light boys
+    global data_store
+    global flight_data
+    flight_data["state"] = "flight"
+    flight_data["status"] = 2
+    data_id = 0
+    recent_command = "v10000_a1000_m8_p1"
+    burn_time = configuration["rocket_data"][1]
+    deploy_time = burn_time + configuration["rocket_data"][2]
+    last_a = bmp_sensor.read_altitude() - calib_alt
+    # Timekeeping
     flight_logger("switching to flight time", duration())
+    launch_time = time.time()
     flight_logger("flight() loop entered", flight_time(launch_time))
-    while True:
+
+    # THIS IS WHERE THE LAUNCH COMMAND GOES
+    v, a, m, p = "00000", "0000", "2", "20000"
+    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+    vega_radio.write(command.encode())
+
+    # Flight Loop
+    while 1:
         #data_store.append((flight_data["current_time"], data_id))
-        v, a, m, p = flight_data["velocity"], (bmp_sensor.read_altitude() - calibrated_alt), "m2", data_id
+        current_mode = "m2"
+        v, a, m, p = flight_data["velocity"], (bmp_sensor.read_altitude() - calib_alt), current_mode, data_id
 
         data_store.append((flight_time(launch_time), a, v, data_id))
         if abs(a - last_a) < 100 and a > 0:
@@ -244,7 +313,21 @@ def flight():
                 print(command)
 
         data_id += 1
+        if float(flight_time(launch_time)) > burn_time + 1:
+            current_mode = "m3"
+
+        if flight_data["status"] == 1:
+            current_mode = "m4"
+
+        if float(flight_time(launch_time)) > deploy_time + 1:
+            current_mode = "m5"
+
+        if abs(get_alt() - calib_alt) < 5:
+            if flight_data["status"] == 2:
+                current_mode = "m6"
+
         sleep(0.1)
+
 
 def bmp_debug():
     # --- TO BE REMOVED ---
@@ -430,9 +513,16 @@ def force_launch():
     flight_logger("FORCING LAUNCH", duration())
     flight_logger("LAUNCH DETCTED", duration())
     vel_start()
-    flight()
-    
-    
+    flight(get_alt(), 0)
+
+def compile_logs():
+    flight_logger("COMPILING LOGS...", duration())
+    flight_log_unload(flight_log)
+    error_unload(error_log)
+    sleep(1)
+
+
+
 
 
 # STARTUP
@@ -447,21 +537,30 @@ command_dict = {
     0 : arm,
     2 : force_launch,
     3 : demo_loop,
-    8 : heartbeat_init,
-    
+    4 : compile_logs,
+    7 : receive_config,
+    8 : heartbeat_init
+
 }
 
 
 while receiving_command:
     flight_logger("RECEIVING COMMAND...", duration())
-            
+
     new_command = vamp_destruct(receive())
-    flight_logger("COMMAND: " + new_command, duration())
+    flight_logger("COMMAND: " + str(new_command), duration())
 
     target_program = new_command[2]
-    command_dict[target_program]()
-    
+    target_comp = new_command[3][0]
+    if __name__ == "__main__":
+        try:
+            # Check vega was the intended target
+            if tagrte_comp == comp_id:
+                command_dict[target_program]()
+        except KeyboardInterrupt:
+            flight_logger("KeyboardInterrupt detected", duration())
+            flight_logger("port closed", duration())
+            compile_logs()
 
 
-
-
+      # do noth
