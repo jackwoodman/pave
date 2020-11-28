@@ -1,5 +1,5 @@
 # pgs
-# internal verion 0.5.2
+# internal verion 0.5.5
 
 '''
     ==========================================================
@@ -24,9 +24,10 @@ from RPLCD.gpio import CharLCD
 # hot_run defines whether Parkes will run using hardware or simulation.
 hot_run = True
 # tested keeps track of if the current version has been live tested
-tested = True
+tested = False
 
 parkes_version = 0.5
+comp_id = 2
 
 
 lcd = CharLCD(cols=16, rows=2, pin_rs=37, pin_e=35, pins_data=[33, 31, 29, 23], numbering_mode=GPIO.BOARD)
@@ -70,10 +71,31 @@ def sys_check_cont():
     return True
 
 def sys_fire(arm, ignition):
+    # Local ignition command, only for single engine fire
     if arm and ignition:
         GPIO.output(12, GPIO.HIGH)
         sleep(5)
         GPIO.output(12, GPIO.LOW)
+
+def sys_epoch_fire(arm, ignition):
+    # commands epoch to fire
+    if arm and ignition:
+        # fire command
+        v, a, m, p = "00000", "0000", "1", "10000"
+        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+        parkes_radio.write(command.encode())
+
+        # get confirmation
+        new_command = vamp_destruct(receive())
+        flight_logger("COMMAND: " + str(new_command), duration())
+
+        target_program = new_command[2]
+        target_comp = new_command[3][0]
+
+        if target_comp == comp_id and target_program = 9:
+            return 1
+        else:
+            return 0
 
 
 
@@ -101,7 +123,7 @@ def dsp_vowel_remover(word):
     vowels, new_word, has_taken = ["a","e","i","o","u"], [], False
 
     for x in list(word)[::-1]:
-         if x not in vowels or has_taken is True:
+         if x not in vowels or has_taken:
             new_word.append(x)
          else:
             has_taken = True
@@ -228,10 +250,10 @@ def format_length(input_string, length=16, remove_vowel=False):
     output_string = ""
 
     if len(str(input_string)) > length:
-        if remove_vowel is False:
+        if not remove_vowel:
             output_string = input_string[:length]
 
-        elif remove_vowel is True:
+        elif remove_vowel:
             unfinished = True
             new_string = input_string
             while unfinished == True:
@@ -591,6 +613,7 @@ def cne_open_port():
 
         # You might need a timeout here if it doesn't work, try a timeout of 1 sec
         )
+    error("E910", "opened port - parkes_radio")
 
 def cne_send(vamp):
     # Sends command over radio
@@ -660,6 +683,7 @@ def cne_heartbeat():
         error("E251")
         hb_count = 0
 
+    error("E911", "Heartbeat loop initiated")
     while configuration["telemetry"]["hb_force_kill"] == False:
         rec_string = cne_receive()
         rec_vamp = cne_vamp_destruct(rec_string)
@@ -691,7 +715,7 @@ def cne_heartbeat_confirmation():
     while rec_con == False:
         result = cne_receive(override_timeout=True)
         if "v10000_a1000_m8_p" in str(result):
-
+            error("E912", "Heartbeat confirmation received")
             rec_con = True
             return rec_con
         elif str(result) == "timeout":
@@ -748,6 +772,7 @@ def cne_handshake():
     heartbeat_conf_result =  cne_heartbeat_confirmation()
     if not heartbeat_conf_result:
         return
+    error("E913", "Handshake good - entering multithread")
     dsp_handshake(True)
     cne_heartbeat_thread()
 
@@ -756,6 +781,7 @@ def cne_kill_heartbeat():
     global configuration
     parkes_radio.write("v10000_a1000_m8_p00000\n".encode())
     configuration["telemetry"]["hb_force_kill"] = True
+    error("E914", "Hb_force_kill is True, joining thread...")
     cne_hb_thread.join()
 
 def cne_vfs_updater(target, value):
@@ -915,11 +941,13 @@ def cne_vfs_update():
         cne_upload_config(configuration["vfs_update_queue"])
         confirm("UPDATE COMPLETE")
 
-    compile_vamp = (10000, 1000, 4, 00000)
-    confirm("VFS LOG COMPILER")
+def cne_vfs_compiler():
+     cne_open_port()
+     compile_vamp = (10000, 1000, 4, 00000)
+     confirm("VFS LOG COMPILER")
 
-    # Loop to send handshake / await response
-    cne_send(compile_vamp)
+     # Loop to send handshake / await response
+     cne_send(compile_vamp)
 
 
 def cne_vfs_menu():
@@ -943,7 +971,8 @@ def sys_connect():
         1 : ["HANDSHAKE", cne_connect],
         2 : ["STATUS", cne_status],
         3 : ["HEARTBEAT", cne_hb_menu],
-        4 : ["VFS CONFIG", cne_vfs_menu]
+        4 : ["VFS CONFIG", cne_vfs_menu],
+        5 : ["PORT OPEN", cne_open_port]
         }
 
     dsp_menu(connect_func_dict, "CONNECT")
@@ -974,6 +1003,8 @@ def lch_hotfire():
     # Used for testing engines without the tests
 
     sure_go = yesno("RUN HOTFIRE?")
+    if not sure_go:
+        return
     error("E290")
     top_line = format_length("HOTFIRE ACTIVE")
     bottom_line = "   |CONTINUE|   "
@@ -1045,15 +1076,19 @@ def lch_preflight():
 
     # Check system armed
     if not sys_check_arm():
-        return "disarm detected"
+        return True
+        #return "disarm detected"
 
     # Check ignition continuity
     if not sys_check_cont():
         return "discontinuity in ignition loop detected"
 
     # Check UART port is open
-    if not parkes_radio.is_open():
-        return "parkes_radio port is closed"
+    try:
+        if not parkes_radio.is_open():
+            return "parkes_radio port is closed"
+    except:
+        return "parkes_radio port has not been initialised"
 
     # Checks heartbeat has been disabled
     if configuration["telemetry"]["hb_active"] == True:
@@ -1061,7 +1096,8 @@ def lch_preflight():
 
     # Check system armed
     if not sys_check_arm():
-        return "disarm detected"
+        return True
+        #return "disarm detected"
 
     # Check ignition pin is LOW
     if not GPIO.input(12):
@@ -1083,7 +1119,9 @@ def lch_quick_check():
 
     return True
 
+
 def lch_countdown():
+    # Local fire command - used when Parkes is commanding a local ignition only
     sleep(2)
     continue_launch = True
 
@@ -1118,46 +1156,63 @@ def lch_countdown():
 def lch_launch_program():
     sure_go = yesno("COMMIT LAUNCH?")
     if not sure_go:
-        break
+        return
 
     # Ask for flight configuration and preflight checks
     pf_results = lch_preflight()
 
     if pf_results != True:
         error("E291", pf_results)
-        break
+        return
 
-    # Time to ask Vega to launch_poll
-    v, a, m, p = "00000", "0000", "0", "00000"
+    if vega_in_loop:
+        # Time to ask Vega to launch_poll
+        v, a, m, p = "00000", "0000", "0", "00000"
+        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+        parkes_radio.write(command.encode())
+
+        vega_confirmed = cne_vamp_destruct(cne_receive())
+        if vega_confirmed[2] != 0:
+            error("E294", str(vega_confirmed))
+            return
+
+        sleep(0.4)
+        vega_poll_results = cne_vamp_destruct(cne_receive())
+
+        if vega_poll_results[3] == "21111":
+            error("E292", str(vega_poll_results))
+            return
+
+        elif vega_poll_results[3] == "20000":
+            error("E990", "vega is configured for flight")
+
+        else:
+            error("E293", str(vega_poll_results))
+            return
+
+
+    # Time to ask Epoch to launch_poll
+    v, a, m, p = "00000", "0000", "0", "10000"
     command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
     parkes_radio.write(command.encode())
 
-    vega_confirmed = vamp_destruct(receive())
-    if vega_confirmed[2] != 0:
-        error("E294", str(vega_confirmed))
-        break
-
-    sleep(0.4)
-    vega_poll_results = vamp_destruct(receive())
+    epoch_poll_results = cne_vamp_destruct(cne_receive())
 
     if vega_poll_results[3] == "11111":
-        error("E292", str(vega_poll_results))
-        break
+        error("E298", str(vega_poll_results))
+        return
 
-    elif vega_poll_results[3] == "00000":
-        error("E990", "vega is configured for flight")
+    elif vega_poll_results[3] == "20000":
+        error("E990", "Epoch is configured for flight")
 
     else:
-        error("E293", str(vega_poll_results))
-        break
+        error("E296", str(epoch_poll_results))
+        return
 
     sleep(2)
     error("E998", "launch countdown commit")
 
     lch_countdown()
-
-
-
 
 def lch_force_launch():
     cne_open_port()
@@ -1215,11 +1270,12 @@ def lch_downlink():
 def sys_launch():
 
     launch_func_dict = {
-        1 : ["ARM VEGA", lch_arm],
-        2 : ["LAUNCH", lch_force_launch],
-        3 : ["HOTFIRE", lch_hotfire],
-        4 : ["DOWNLINK", lch_downlink],
-        5 : ["LCH LOOP", lch_loop]
+        1 : ["AUTOSEQUENCE", lch_launch_program],
+        2 : ["ARM VEGA", lch_arm],
+        3 : ["LAUNCH", lch_force_launch],
+        4 : ["HOTFIRE", lch_hotfire],
+        5 : ["DOWNLINK", lch_downlink],
+        6 : ["LCH LOOP", lch_loop]
         }
 
     current_select = 1
@@ -1238,7 +1294,7 @@ def sys_main_menu():
         3 : ["LAUNCH", sys_launch]
         }
     while True:
-        if configuration["go_reboot"] is True or configuration["go_kill"] is True:
+        if configuration["go_reboot"] or configuration["go_kill"]:
             error("E399", "go_kill / go_reboot detected")
             return
         else:
@@ -1364,25 +1420,32 @@ def cfg_run_command(target, command):
 
     command_funcs[target](command)
 
-def cfg_startuptest_ignore():
+def cfg_startuptest_modify(set_to=False):
     global run_startup_test
-    run_startup_test = False
-    error("E202")
+    run_startup_test = set_to
+
+    if not set_to:
+        error("E202")
+
+def cfg_include_vega():
+    global vega_in_loop
+    vega_in_loop = True
+
 
 def cfg_kill_setup():
     return
 
 
 def sys_config_interpreter(config_file):
-
     identifier_type = {
         "!" : "value",
         "$" : "command"
     }
 
     config_commands = {
-        "ignore_startup_tests" : cfg_startuptest_ignore,
-        "end_setup" : cfg_kill_setup
+        "ignore_startup_tests" : cfg_startuptest_modify,
+        "end_setup" : cfg_kill_setup,
+        "expect_vega" : cfg_include_vega
     }
     config_lines = config_file.readlines()
 
@@ -1397,7 +1460,6 @@ def sys_config_interpreter(config_file):
         elif identifier_type[identifier] == "command":
 
             if "." in content:
-
                 target, command = content.split(".")
 
                 cfg_run_command(target, command.rstrip())
@@ -1415,23 +1477,24 @@ def sys_startup_test():
         }
     passed_test, reason = sys_startup_tests(expected_value, configuration)
 
-    if passed_test is True and reason in startup_errors.keys():
+    if passed_test and reason in startup_errors.keys():
             error(startup_errors[reason], "startup_error: " + reason)
     else:
             error("E101")
 
 
 # Main running loop
-while configuration["go_reboot"] is True and configuration["go_kill"] is False:
+while configuration["go_reboot"] and not configuration["go_kill"]:
     global run_startup_test
     global exptected_value
-    run_startup_test, expected_value, configuration["go_reboot"] = True, 0, False
+    global vega_in_loop
+    run_startup_test, expected_value, configuration["go_reboot"], vega_in_loop = True, 0, False, False
     config_file = open("/home/pi/parkes_config.txt", "r")
     #config_lines = config_file.readlines()
 
     sys_config_interpreter(config_file)
 
-    if run_startup_test is True:
+    if run_startup_test:
         sys_startup_test()
 
     config_file.close()
