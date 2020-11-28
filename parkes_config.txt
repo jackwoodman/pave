@@ -24,4 +24,5 @@ $expected_value.set=9
 $telemetry.init
 $telemetry.set=default
 $ignore_startup_tests
+$expect_vega
 $end_setup
