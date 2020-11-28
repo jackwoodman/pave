@@ -1,7 +1,7 @@
 #pls
 '''
     ==========================================================
-    Epoch Launch Software, version 0.0
+    Epoch Launch Software, version 0.0.1
     Copyright (C) 2020 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
@@ -21,6 +21,7 @@ from time import sleep
 
 # Variables
 epoch_version = 0.0
+comp_id = 1
 receiving_command = True
 ready_fire = False
 
@@ -123,11 +124,14 @@ def vamp_destruct(vamp):
 """==== EPOCH FUNCTIONS ===="""
 def echo():
     # oof oof dsp_error_nonfatal
+    # this doesn't work yet but is vital
 
     sleep(1)
     flight_logger("echo - active", duration())
 
-    epoch_radio.write("returning echo", duration())
+    v, a, m, p = "00000", "0000", "2", "20000"
+    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+    epoch_radio.write(command.encode())
     sleep(1)
 
     flight_logger("echo - inactive", duration())
@@ -137,17 +141,21 @@ def command_ignition():
     # Upon receiving command from Parkes, approve Epoch to fire.
     flight_logger("command_ignition - active", duration())
     sleep(1)
-    epoch_radio.write("0001\n".encode())
-    flight_logger("commanding all_fire", duration())
 
-    for second in range(11):
-        flight_logger("local countdown - " + str(second), duration())
-        sleep(1)
+    # confirm with parkes that launch is imminent
+    v, a, m, p = "00000", "0000", "9", "20000"
+    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+    epoch_radio.write(command.encode())
+
+
+
+
+    flight_logger("commanding all_fire", duration())
 
     all_fire()
     flight_logger("command_ignition - inactive", duration())
 
-def test_single(target_ignitor):
+def test_single(target_ignitor=ignitor_x):
     # stay for That
     sleep(1)
     flight_logger("test_single - active", duration())
@@ -219,20 +227,6 @@ def test_fire():
     GPIO.output(ignitor_z, GPIO.LOW)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # STARTUP
 init_time = time.time()
 flight_logger("epoch launch software - startup", duration())
@@ -258,9 +252,13 @@ while receiving_command:
     flight_logger("COMMAND: " + str(new_command), duration())
 
     target_program = new_command[2]
+    target_comp = new_command[3][0]
     if __name__ == "__main__":
         try:
-            command_dict[target_program]()
+            # Check epoch is the intended target for command
+            if target_comp == comp_id:
+
+                command_dict[target_program]()
         except KeyboardInterrupt:
             flight_logger("KeyboardInterrupt detected", duration())
             flight_logger("port closed", duration())
