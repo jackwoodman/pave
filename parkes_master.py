@@ -1,5 +1,5 @@
 # pgs
-# internal verion 0.5.5
+# internal verion 0.5.6
 
 '''
     ==========================================================
@@ -25,27 +25,49 @@ from RPLCD.gpio import CharLCD
 hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = False
-
 parkes_version = 0.5
-comp_id = 2
 
 
-lcd = CharLCD(cols=16, rows=2, pin_rs=37, pin_e=35, pins_data=[33, 31, 29, 23], numbering_mode=GPIO.BOARD)
+# Constants
+COMP_ID = 2
+DEFAULTLEN = 16
+
+# Default pin constants for GPIO in/out
+GPIO_BACK = 16
+GPIO_SELECT = 18
+GPIO_CYCLE = 22
+GPIO_ARM = 13
+GPIO_LAUNCH = 11
+GPIO_IGNITOR = 12
+
+DEFAULT_NUMSEL = [1,2,3,4,5,6,7,8,9]
+VAMP_STRING_STANDARD = {"v":5, "a":4, "m": 1, "p":5}
+VAMP_TUPLE_STANDARD = {0:5, 1:4, 2:1 , 3:5}
+
+
+
+# LCD SETUP
+lcd = CharLCD(cols=16,
+              rows=2,
+              pin_rs=37,
+              pin_e=35,
+              pins_data=[33, 31, 29, 23],
+              numbering_mode=GPIO.BOARD)
 
 lcd.clear()
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BOARD)
 
 # Defining Hardware Input
-GPIO.setup(16, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Back button - GPIO 23
-GPIO.setup(18, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Select button - GPIO 24
-GPIO.setup(22, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Cycle button - GPIO 25
-GPIO.setup(13, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Arm key - GPIO 27
-GPIO.setup(11, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Launch button - GPIO 17
+GPIO.setup(GPIO_BACK, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Back button - GPIO 23
+GPIO.setup(GPIO_SELECT, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Select button - GPIO 24
+GPIO.setup(GPIO_CYCLE, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Cycle button - GPIO 25
+GPIO.setup(GPIO_ARM, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Arm key - GPIO 27
+GPIO.setup(GPIO_LAUNCH, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Launch button - GPIO 17
 
 
 # Defining Hardware Output
-GPIO.setup(12, GPIO.OUT) # Ignition Output - GPIO 18
+GPIO.setup(GPIO_IGNITOR, GPIO.OUT) # Ignition Output - GPIO 18
 
 global configuration
 configuration = {
@@ -56,26 +78,28 @@ configuration = {
 
 
 def sys_check_arm():
-    if GPIO.input(13) == GPIO.LOW:
+    if GPIO.input(GPIO_ARM) == GPIO.LOW:
         return True
     else:
         return False
 
 def sys_check_launch():
-    if GPIO.input(11) == GPIO.LOW:
+    if GPIO.input(GPIO_LAUNCH) == GPIO.LOW:
         return True
     else:
         return False
 
 def sys_check_cont():
+    # Not-yet-implemeneted function to check for continuity in launchpad
+    # will likely be removed as from pre-Epoch ignition system
     return True
 
 def sys_fire(arm, ignition):
     # Local ignition command, only for single engine fire
     if arm and ignition:
-        GPIO.output(12, GPIO.HIGH)
+        GPIO.output(GPIO_IGNITOR, GPIO.HIGH)
         sleep(5)
-        GPIO.output(12, GPIO.LOW)
+        GPIO.output(GPIO_IGNITOR, GPIO.LOW)
 
 def sys_epoch_fire(arm, ignition):
     # commands epoch to fire
@@ -92,12 +116,10 @@ def sys_epoch_fire(arm, ignition):
         target_program = new_command[2]
         target_comp = new_command[3][0]
 
-        if target_comp == comp_id and target_program = 9:
+        if target_comp == COMP_ID and target_program = 9:
             return 1
         else:
             return 0
-
-
 
 
 def sys_file_append(target_file, data):
@@ -245,7 +267,7 @@ def confirm(message):
     update_display(top_line, bottom_line)
     wait_select()
 
-def format_length(input_string, length=16, remove_vowel=False):
+def format_length(input_string, length=DEFAULTLEN, remove_vowel=False):
     # Formats string. Default len is 16, but can be changed. Won't remove vowels unless asked to
     output_string = ""
 
@@ -286,10 +308,13 @@ def button_input():
     else:
         error("E107")
 
+
+
 def update_display(top_line, bottom_line):
+    # Function takes input for 16x2 screen and displays either on hardware or software
 
     if hot_run:
-        if len(top_line) <= 16 and len(bottom_line) <= 16:
+        if len(top_line) <= DEFAULTLEN and len(bottom_line) <= DEFAULTLEN:
             send_to_display = format_length(top_line) + format_length(bottom_line)
             lcd.write_string(send_to_display)
             return 1
@@ -303,7 +328,7 @@ def update_display(top_line, bottom_line):
         print()
         print(" ________________")
         print("|" + str(top_line) + "|")
-        print("|" + format_length(str(bottom_line),16) + "|")
+        print("|" + format_length(str(bottom_line), DEFAULTLEN) + "|")
         print("|________________|\n")
         return 1
 
@@ -316,16 +341,17 @@ def hardware_button_input():
     sleep_delay = configuration["rep_delay"]
     print("awaiting input...")
     while True:
-
-        if GPIO.input(16) == GPIO.LOW:
+        if GPIO.input(GPIO_BACK) == GPIO.LOW:
             print("input detected: back")
             sleep(sleep_delay)
             return "back"
-        if GPIO.input(18) == GPIO.LOW:
+            
+        if GPIO.input(GPIO_SELECT) == GPIO.LOW:
             print("input detected: select")
             sleep(sleep_delay)
             return "select"
-        if GPIO.input(22) == GPIO.LOW:
+            
+        if GPIO.input(GPIO_CYCLE) == GPIO.LOW:
             print("input detected: cycle")
             sleep(sleep_delay)
             return "cycle"
@@ -334,7 +360,6 @@ def hardware_button_input():
 
 def software_button_input():
     # Input detection for emulation
-    button_pressed = ""
     new_com = input(": ")
     if new_com == "c":
         return "cycle"
@@ -351,7 +376,7 @@ def hardware_update_display(display_input):
     # Else, returns error code
     top_line, bottom_line = display_input
 
-    if len(top_line) <= 16 and len(bottom_line) <= 16:
+    if len(top_line) <= DEFAULTLEN and len(bottom_line) <= DEFAULTLEN:
         send_to_display = format_length(top_line) + format_length(bottom_line)
         lcd.write_string(send_to_display)
         return 1
@@ -364,18 +389,18 @@ def software_update_display(display_input):
     print()
     print(" ________________")
     print("|" + str(top_line) + "|")
-    print("|" + format_length(str(bottom_line),16) + "|")
+    print("|" + format_length(str(bottom_line), DEFAULTLEN) + "|")
     print("|________________|\n")
 
 
 def num_select(message, values):
     # Basic number selection UI, returns integer value
-    current_num = values[0]
+    current_num, builder, original = values[0], [values[0]], values
     top_line = message
-    builder = [values[0]]
-    original = values
     count = 0
-    for i in range(16 - len(message)):
+
+    # Pad missing spaces
+    for i in range(DEFAULTLEN - len(message)):
         top_line += " "
 
     while True:
@@ -386,18 +411,22 @@ def num_select(message, values):
         number_list = [x for x in num_list]
         bottom_line = "|" + str(number_list.pop(0)) + "| "
 
+        # If more than four numbers, only preview the first six
         if len(number_list) > 4:
             first_six = number_list[:6]
         else:
             for i in range(12 - (2*len(number_list))):
-                           bottom_line += " "
+                bottom_line += " "
+
             first_six = number_list[:6]
 
+        # Show first six elements of number list
         for element in first_six:
             bottom_line += str(element) + " "
 
         update_display(top_line, bottom_line)
 
+        # look for UI interaction
         choose = button_input()
         if choose == "cycle":
             original.append(original.pop(0))
@@ -408,6 +437,21 @@ def num_select(message, values):
 
         elif choose == "back":
             return "!"
+
+def display_format(top, bottom, default=True):
+    # Formats top and bottom line, allowing for change in default
+
+    if default is True:
+        top_line = format_length(top)
+        bottom_line = format_length(bottom)
+
+    else:
+        new_len, new_vowel = default
+        top_line = format_length(top, new_len, new_vowel)
+        bottom_line = format_length(bottom, new_len, new_vowel)
+
+    return top_line, bottom_line
+    
 
 def wait_select():
     # Waits for "select" confirmation
@@ -420,7 +464,7 @@ def wait_select():
 def yesno(message):
     # Basic bool select function, returns bool value
     top_line = message
-    for i in range(16 - len(message)):
+    for i in range(DEFAULTLEN - len(message)):
         top_line += " "
     current_select = False
     while True:
@@ -433,6 +477,7 @@ def yesno(message):
 
         choose = button_input()
         if choose == "cycle":
+            # Invert current select flag
             if current_select == True:
                 current_select = False
             else:
@@ -459,7 +504,7 @@ def sys_startup_animation():
             filler += " "
         start_string = "  |" + filler + "|  "
 
-        update_display(format_length("PARKES v" + str(parkes_version), 16), start_string)
+        update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN), start_string)
         count += 1
         sleep(time_del)
 
@@ -467,24 +512,24 @@ def sys_startup_animation():
 def sys_startup():
 
     sleep(1)
-    update_display(format_length("PARKES v" + str(parkes_version), 16),  format_length("loading", 16))
+    update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN),  format_length("loading", DEFAULTLEN))
     sleep(0.4)
 
     sys_startup_animation()
-    update_display(format_length("", 16), format_length(" READY", 16))
+    update_display(format_length("", DEFAULTLEN), format_length(" READY", DEFAULTLEN))
     sleep(1.2)
 
 def con_delay():
     # Config: set delay for button input recog
     global configuration
-    new_val = "0." + str(num_select("SELECT DURATION:", [1,2,3,4,5,6,7,8,9]))
+    new_val = "0." + str(num_select("SELECT DURATION:", DEFAULT_NUMSEL))
     if new_val != "0.!":
         configuration["rep_delay"] = float(new_val)
 
 def con_beep():
     # Config: set volume for beeper
     global configuration
-    new_val =str(num_select("SELECT VOLUME:", [1,2,3,4,5,6,7,8,9]))
+    new_val =str(num_select("SELECT VOLUME:", DEFAULT_NUMSEL))
     if new_val != "!":
         configuration["beep_volume"] = int(new_val)
 
@@ -505,7 +550,7 @@ def con_shutdown():
 
 def con_about():
     # About the program
-    top_line, bottom_line = format_length("PARKES v" + str(parkes_version), 16), format_length("novae space 2020")
+    top_line, bottom_line = format_length("PARKES v" + str(parkes_version), DEFAULTLEN), format_length("novae space 2020")
     update_display(top_line, bottom_line)
     wait_select()
 
@@ -534,10 +579,10 @@ def con_display():
     while True:
         bottom_line = ""
         current_sel = str(current+1) + "/"+str(len(configuration))
-        top_line = format_length("CONFG VALS: ", 16 - len(current_sel)) + current_sel;
+        top_line = format_length("CONFG VALS: ", DEFAULTLEN - len(current_sel)) + current_sel;
 
         current_con = conf_list[current]
-        con_line = bottom_line + format_length(current_con + ": " + str(configuration[current_con]), 16)
+        con_line = bottom_line + format_length(current_con + ": " + str(configuration[current_con]), DEFAULTLEN)
         update_display(top_line, con_line)
         choose = button_input()
 
@@ -566,10 +611,10 @@ def cne_status():
     while True:
         bottom_line = ""
         current_sel = str(current+1) + "/"+str(len(cne_list))
-        top_line = format_length("CNCT VALS: ", 16 - len(current_sel)) + current_sel;
+        top_line = format_length("CNCT VALS: ", DEFAULTLEN - len(current_sel)) + current_sel;
 
         current_con = cne_list[current]
-        con_line = bottom_line + format_length(current_con + ": " + str(configuration["telemetry"][current_con]), 16)
+        con_line = bottom_line + format_length(current_con + ": " + str(configuration["telemetry"][current_con]), DEFAULTLEN)
 
         update_display(top_line, con_line)
         choose = button_input()
@@ -583,22 +628,24 @@ def cne_status():
             break
 
 def check_vamp_string(vamp):
-    vamp_lengths = {"v":5, "a":4, "m": 1, "p":5}
+    # Takes vamp as string and makes sure it conforms to standard
+    
     vamp_decom = []
     for element in vamp.split("_"):
         vamp_decom = element[1:]
 
-        if len(vamp_decom) != vamp_lengths[element[0]]:
+        if len(vamp_decom) != VAMP_STRING_STANDARD[element[0]]:
             error("E122")
+            return False
 
 
         vamp_decom = element[1:]
         v, a, m, p = vamp_decom
 
 def check_vamp_tuple(vamp):
-    vamp_lengths = {0:5, 1:4, 2: 1, 3:5}
+    # Takes vamp as tuple and makes sure it conforms to standard
     for element in vamp:
-        if vamp_lengths[vamp.index(element)] != len(str(element)):
+        if VAMP_TUPLE_STANDARD[vamp.index(element)] != len(str(element)):
             error("E123")
 
 def cne_open_port():
@@ -626,9 +673,12 @@ def cne_send(vamp):
     command = command.encode()
     parkes_radio.write(command)
 
-def cne_receive(override_timeout=False):
+def cne_receive(override_timeout=False, timeout_set=5):
+    # Receives for command from parkes_radio - waits indefinitely
+    # unless timeout is specified
+    
     if override_timeout:
-        parkes_radio.timeout = 5
+        parkes_radio.timeout = timeout_set
         data = parkes_radio.read_until()
         to_return = data
         to_return = to_return.decode()
@@ -655,6 +705,7 @@ def cne_receive(override_timeout=False):
 
 
 def cne_vamp_destruct(vamp):
+    # Breaks vamp into tuple of values
     vamp_decom = []
     for element in vamp.split("_"):
         vamp_decom.append(element[1:])
@@ -671,7 +722,7 @@ def cne_vamp_destruct(vamp):
 
 
 def cne_heartbeat():
-    # Heatbeat func - will be threading
+    # Threaded function to monitor connection with Vega
     configuration["telemetry"]["hb_active"] = True
     configuration["telemetry"]["hb_force_kill"] = False
     receiving = True
@@ -684,7 +735,10 @@ def cne_heartbeat():
         hb_count = 0
 
     error("E911", "Heartbeat loop initiated")
+
+    # Main heartbeat loop - continues until hb_force_kill is triggered
     while configuration["telemetry"]["hb_force_kill"] == False:
+
         rec_string = cne_receive()
         rec_vamp = cne_vamp_destruct(rec_string)
         configuration["telemetry"]["hb_data"].append(rec_vamp)
@@ -697,12 +751,14 @@ def cne_heartbeat():
         except:
             has_failed = True
 
+    # Reset config values for heartbeat close
     configuration["telemetry"]["hb_active"] = False
     configuration["telemetry"]["hb_data"] = []
     configuration["telemetry"]["hb_sigstrn"] = 0
 
 
 def cne_heartbeat_thread():
+    # Initiates heartbeat in thread, thread close not yet handled
     force_kill = False
     global cne_hb_thread
     # Moves the heartbeat function into its own function
@@ -711,9 +767,10 @@ def cne_heartbeat_thread():
 
 
 def cne_heartbeat_confirmation():
+    # Waits for hb conf from Vega, supports timeout of 5 seconds
     rec_con = False
     while rec_con == False:
-        result = cne_receive(override_timeout=True)
+        result = cne_receive(override_timeout=True, timeout_set=5)
         if "v10000_a1000_m8_p" in str(result):
             error("E912", "Heartbeat confirmation received")
             rec_con = True
@@ -756,6 +813,8 @@ def dsp_handshake(status):
 
 
 def cne_handshake():
+    # Function to initiate connection between Vega and Parkes for heartbeat
+    # support. 
     global configuration
     dsp_handshake(False)
     handshake_confirmed = False
@@ -822,6 +881,7 @@ def cne_upload_config(params):
 
 
 def dsp_upload_config(status, data=False):
+    # Moves param list to parkes_radio for upload to vega
     top_line = format_length("VFS UPDATE TOOL")
     if status == "uploading":
         bottom_line = "uploading..."
@@ -900,9 +960,6 @@ def cne_hb_menu():
     dsp_menu(hb_func_dict, "HEARTBEAT")
     # Exit to menu, don't write below here
 
-
-
-
 def cne_connect():
     global configuration
     cne_open_port()
@@ -910,7 +967,7 @@ def cne_connect():
     configuration["telemetry"]["connected"] = True
 
 def cne_vfs_beep():
-    new_val =str(num_select("SELECT VOLUME:", [1,2,3,4,5,6,7,8,9]))
+    new_val =str(num_select("SELECT VOLUME:", DEFAULT_NUMSEL))
     if new_val != "!":
         cne_vfs_updater("beep_vol", new_val)
         sleep(0.2)
@@ -1000,7 +1057,7 @@ def sys_config():
 
 
 def lch_hotfire():
-    # Used for testing engines without the tests
+    # Used for testing engines without the preflight tests
 
     sure_go = yesno("RUN HOTFIRE?")
     if not sure_go:
@@ -1046,8 +1103,7 @@ def lch_hotfire():
         update_display(top_line, bottom_line)
         sleep(0.95)
         if not sys_check_arm():
-            top_line = format_length("DISARMED")
-            bottom_line = format_length("ending countdown")
+            top_line, bottom_line =  display_format("DISARMED", "ending countdown")
             update_display(top_line, bottom_line)
             sleep(3)
             continue_launch = False
@@ -1055,14 +1111,13 @@ def lch_hotfire():
 
     if continue_launch:
         sys_fire(sys_check_arm(), True)
-        top_line = format_length("    COUNTDOWN   ")
-        bottom_line = format_length("    ignition    ")
+        top_line, bottom_line =  display_format("    COUNTDOWN   ", "    ignition    ")
         sleep(10)
 
 
 def lch_flight_configure():
     # Parkes flight configuration set
-    GPIO.output(12, GPIO.LOW)
+    GPIO.output(GPIO_IGNITOR, GPIO.LOW)
 
     return True
 
@@ -1100,7 +1155,7 @@ def lch_preflight():
         #return "disarm detected"
 
     # Check ignition pin is LOW
-    if not GPIO.input(12):
+    if not GPIO.input(GPIO_IGNITOR):
         return "ignition pin was not pulled low"
 
     return True
@@ -1147,7 +1202,9 @@ def lch_countdown():
 
 
     if continue_launch:
+        # Passed launch checks, proceed with ignition command
         sys_fire(sys_check_arm(), True)
+        
         top_line = format_length("    COUNTDOWN   ")
         bottom_line = format_length("    ignition    ")
         error("E999", "ignition")
@@ -1303,12 +1360,12 @@ def sys_main_menu():
 def sys_shutdown_process():
 
     sleep(1)
-    top_line, bottom_line = "PARKES v" + str(parkes_version) + "     ", format_length("shutting down", 16)
+    top_line, bottom_line = "PARKES v" + str(parkes_version) + "     ", format_length("shutting down", DEFAULTLEN)
     update_display(top_line, bottom_line)
     error("E900", "Shutdown process initiated")
     sleep(4)
 
-    top_line, bottom_line = format_length("", 16), format_length(" done", 16)
+    top_line, bottom_line = format_length("", DEFAULTLEN), format_length(" done", DEFAULTLEN)
     error("E901", "Shutdown process complete")
     update_display(top_line, bottome_line)
     sleep(2)
