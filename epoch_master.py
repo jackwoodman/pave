@@ -1,7 +1,7 @@
 #els
 '''
     ==========================================================
-    Epoch Launch Software, version 0.0
+    Epoch Launch Software, version 0.1
     Copyright (C) 2020 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
