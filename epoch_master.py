@@ -1,7 +1,7 @@
-#pls
+#els
 '''
     ==========================================================
-    Epoch Launch Software, version 0.0.1
+    Epoch Launch Software, version 0.0
     Copyright (C) 2020 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
@@ -20,21 +20,44 @@ import RPi.GPIO as GPIO
 from time import sleep
 
 # Variables
-epoch_version = 0.0
+epoch_version = 0.1
 comp_id = 1
 receiving_command = True
 ready_fire = False
+
+global error_log
+global flight_log
+
+error_log, flight_log = [], []
 
 # Constants
 IGNITION_DELAY = 5
 
 # GPIO setup
+ignitor_x = 11
+ignitor_y = 13
+ignitor_z = 15
+
+x_power = 36
+y_power = 38
+z_power = 40
+
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BOARD)
 
-ignitor_x = 12
-ignitor_y = 13
-ignitor_z = 14
+GPIO.setup(ignitor_x, GPIO.OUT)    # needs to be defined
+GPIO.setup(ignitor_y, GPIO.OUT)    # needs to be defined
+GPIO.setup(ignitor_z, GPIO.OUT)    # needs to be defined
+
+GPIO.setup(x_power, GPIO.OUT)      # needs to be defined
+GPIO.setup(y_power, GPIO.OUT)      # needs to be defined
+GPIO.setup(z_power, GPIO.OUT)      # needs to be defined
+
+GPIO.output(x_power, GPIO.HIGH)
+GPIO.output(y_power, GPIO.HIGH)
+GPIO.output(z_power, GPIO.HIGH)
+
+
 
 
 # System functions
@@ -136,6 +159,36 @@ def echo():
 
     flight_logger("echo - inactive", duration())
 
+def relay_powerup(target="all"):
+    # these can be combined
+    gpio_dict = {"x": x_power, "y": y_power, "z": z_power}
+
+    if target == "all":
+        GPIO.output(x_power, 1)
+        GPIO.output(y_power, 1)
+        GPIO.output(z_power, 1)
+
+    else:
+        GPIO.output(gpio_dict[target], 1)
+
+def relay_shutdown(target="all"):
+    # these can be combined
+    gpio_dict = {"x": x_power, "y": y_power, "z": z_power}
+
+    if target == "all":
+        GPIO.output(x_power, 0)
+        GPIO.output(y_power, 0)
+        GPIO.output(z_power, 0)
+
+    else:
+        GPIO.output(gpio_dict[target], 0)
+
+def startup():
+    relay_powerup()
+    print("starting up...")
+
+
+
 
 def command_ignition():
     # Upon receiving command from Parkes, approve Epoch to fire.
@@ -174,14 +227,14 @@ def test_all():
 
 def select_fire(target_ignitor):
     sleep(1)
-    flight_logger("IGNITION: firing ignitor " + target_ignitor, duration())
+    flight_logger("IGNITION: firing ignitor " + str(target_ignitor), duration())
 
     GPIO.output(target_ignitor, GPIO.HIGH)
     sleep(IGNITION_DELAY)
     GPIO.output(target_ignitor, GPIO.LOW)
 
 
-def all_fire():
+def all_fire(sleep_del=IGNITION_DELAY):
     flight_logger("IGNITION: firing all ignitors", duration())
 
     flight_logger("all_fire HIGH", duration())
@@ -190,7 +243,7 @@ def all_fire():
     GPIO.output(ignitor_y, GPIO.HIGH)
     GPIO.output(ignitor_z, GPIO.HIGH)
 
-    sleep(IGNITION_DELAY)
+    sleep(sleep_del)
 
     flight_logger("all_fire LOW", duration())
     GPIO.output(ignitor_x, GPIO.LOW)
@@ -199,23 +252,45 @@ def all_fire():
 
     flight_logger("all_fire complete", duration())
 
+def command_fire():
+    current_am = 1
+    while True:
+        amount = input(": ")
+
+
+        if amount == "":
+            all_fire(current_am)
+        else:
+            current_am = float(amount)
+
 def test_fire():
     sleep(1)
+    counter = 1
+    seco = 0
 
-    # Testfire ignitor x
-    GPIO.output(ignitor_x, GPIO.HIGH)
-    sleep(1)
-    GPIO.output(ignitor_x, GPIO.LOW)
+    while counter > 0:
 
-    # Testfire ignitor y
-    GPIO.output(ignitor_y, GPIO.HIGH)
-    sleep(1)
-    GPIO.output(ignitor_y, GPIO.LOW)
+        # Testfire ignitor x
+        GPIO.output(ignitor_x, GPIO.HIGH)
+        sleep(counter)
+        GPIO.output(ignitor_x, GPIO.LOW)
 
-    # Testfire ignitor z
-    GPIO.output(ignitor_z, GPIO.HIGH)
-    sleep(1)
-    GPIO.output(ignitor_z, GPIO.LOW)
+        # Testfire ignitor y
+        GPIO.output(ignitor_y, GPIO.HIGH)
+        sleep(counter)
+        GPIO.output(ignitor_y, GPIO.LOW)
+
+        # Testfire ignitor z
+        GPIO.output(ignitor_z, GPIO.HIGH)
+        sleep(counter)
+        GPIO.output(ignitor_z, GPIO.LOW)
+        sleep(counter)
+        counter -= 0.1
+
+        if seco < 10 and counter < 0.1:
+            print("go")
+            counter += 0.1
+            seco += 1
 
     # Testfire all ignitors
     GPIO.output(ignitor_x, GPIO.HIGH)
@@ -232,7 +307,7 @@ init_time = time.time()
 flight_logger("epoch launch software - startup", duration())
 flight_logger("initialising pls - verison: " + str(epoch_version), duration())
 # Initialise epoch_radio
-open_port()
+#open_port() DEBUG
 time.sleep(1)
 flight_logger("port open", duration())
 
@@ -240,12 +315,27 @@ command_dict = {
     0 : echo,
     1 : command_ignition,
     2 : test_fire,
-    3 : test_single
+    3 : test_single,
+    4 : startup,
+    5 : command_fire
 
 }
 
 
-while receiving_command:
+command_list = {0:"echo", 1:"command_ignition", 2:"test_fire", 3:"test_single", 4:"startup", 5:"command_fire"}
+while True:
+
+    for command in command_list:
+        print(" - " + str(command) + " : " + str(command_list[command]))
+    print(" ")
+    inp = int(input("Select command: "))
+
+    if inp in command_list:
+        command_dict[inp]()
+    print(" ")
+    time.sleep(1)
+
+test = """while receiving_command:
     flight_logger("RECEIVING COMMAND...", duration())
 
     new_command = vamp_destruct(receive())
@@ -262,7 +352,8 @@ while receiving_command:
         except KeyboardInterrupt:
             flight_logger("KeyboardInterrupt detected", duration())
             flight_logger("port closed", duration())
-            compile_logs()
+            compile_logs()"""
+
 
 
 
