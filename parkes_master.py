@@ -1,5 +1,5 @@
 # pgs
-# internal verion 0.5.6
+# internal verion 0.5.7
 
 '''
     ==========================================================
@@ -19,26 +19,31 @@ from time import sleep
 import RPi.GPIO as GPIO
 from random import randint
 from datetime import datetime
-from RPLCD.gpio import CharLCD
+from RPLCD import CharLCD
 
 # hot_run defines whether Parkes will run using hardware or simulation.
 hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = False
 parkes_version = 0.5
+internal_version = "0.5.7"
 
 
 # Constants
 COMP_ID = 2
 DEFAULTLEN = 16
+IDLE_TIME = 35
+ID_LEN = 10
 
 # Default pin constants for GPIO in/out
 GPIO_BACK = 16
 GPIO_SELECT = 18
 GPIO_CYCLE = 22
 GPIO_ARM = 13
+GPIO_MISSILE = 15
 GPIO_LAUNCH = 11
 GPIO_IGNITOR = 12
+GPIO_LIGHT = 32
 
 DEFAULT_NUMSEL = [1,2,3,4,5,6,7,8,9]
 VAMP_STRING_STANDARD = {"v":5, "a":4, "m": 1, "p":5}
@@ -63,7 +68,15 @@ GPIO.setup(GPIO_BACK, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Back button - GPIO 23
 GPIO.setup(GPIO_SELECT, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Select button - GPIO 24
 GPIO.setup(GPIO_CYCLE, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Cycle button - GPIO 25
 GPIO.setup(GPIO_ARM, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Arm key - GPIO 27
+GPIO.setup(GPIO_MISSILE, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Arm key - GPIO 22
 GPIO.setup(GPIO_LAUNCH, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Launch button - GPIO 17
+GPIO.setup(GPIO_LIGHT, GPIO.OUT) # Light  - GPIO 17
+
+def sys_check_status(gpio_pin):
+    if GPIO.input(gpio_pin) == GPIO.LOW:
+        return True
+    else:
+        return False
 
 
 # Defining Hardware Output
@@ -116,7 +129,7 @@ def sys_epoch_fire(arm, ignition):
         target_program = new_command[2]
         target_comp = new_command[3][0]
 
-        if target_comp == COMP_ID and target_program = 9:
+        if target_comp == COMP_ID and target_program == 9:
             return 1
         else:
             return 0
@@ -128,13 +141,14 @@ def sys_file_append(target_file, data):
     opened_file.write(data + "\n")
     opened_file.close()
 
-def sys_file_init(target_file, title):
+def sys_file_init(target_file, title, id="unavailable"):
     # File creation tool, imported from VFS 0.3
     top_line = f"========== {title} ==========\n"
     bottom_line = "-" * len(top_line) + "\n"
     new_file = open(target_file, "w")
     new_file.write(top_line)
     new_file.write("Parkes Version: " + str(parkes_version) + "\n")
+    new_file.write("Parkes ID: " + str(id) + "\n")
     new_file.write(bottom_line)
     new_file.write("")
     new_file.close()
@@ -240,16 +254,17 @@ def error(e_code, data=None):
 #===============================================#
 
 def dsp_menu(func_dict, menu_title):
+    # displays menu items for user interaction
     global Configuration
     current_select = 1
 
     while True:
         current_func_name, current_func = func_dict[current_select]
         title = menu_title + ":"
-        top_line = format_length(menu_title, 13) + str(current_select) + "/" + str(len(func_dict))
+        top_line = format_length(menu_title, 11) + format_length(str(current_select) + "/" + str(len(func_dict)),5, alignment="RIGHT")
         bottom_line = "=> " + format_length(current_func_name, 12)
         update_display(top_line, bottom_line)
-        choose = button_input()
+        choose = button_input(True)
 
         if choose == "cycle":
             if current_select != len(func_dict):
@@ -258,16 +273,19 @@ def dsp_menu(func_dict, menu_title):
                 current_select = 1
         elif choose == "back":
             break
+
         elif choose == "select":
             current_func()
 
+
 def confirm(message):
+    # asks user to confirm message before continuing
     top_line = format_length(message)
     bottom_line = "      |OK|      "
     update_display(top_line, bottom_line)
     wait_select()
 
-def format_length(input_string, length=DEFAULTLEN, remove_vowel=False):
+def format_length(input_string, length=DEFAULTLEN, remove_vowel=False, alignment="LEFT"):
     # Formats string. Default len is 16, but can be changed. Won't remove vowels unless asked to
     output_string = ""
 
@@ -290,17 +308,24 @@ def format_length(input_string, length=DEFAULTLEN, remove_vowel=False):
             output_string = format_length(output_string, length)
 
     elif len(input_string) < length:
-        output_string = input_string
-        for i in range(length - len(input_string)):
-            output_string += " "
+        # Haven't reached length, so extend per alignment rules
+        if alignment == "LEFT":
+            output_string = input_string
+            for i in range(length - len(input_string)):
+                output_string += " "
+        else:
+            # attempt right alignment
+            output_string = input_string
+            for i in range(length - len(input_string)):
+                output_string = " " + output_string
     else:
         output_string = input_string
 
     return output_string
 
-def button_input():
+def button_input(allow_idle=False):
     if hot_run:
-        return hardware_button_input()
+        return hardware_button_input(allow_idle)
 
     elif not hot_run:
         return software_button_input()
@@ -319,7 +344,6 @@ def update_display(top_line, bottom_line):
             lcd.write_string(send_to_display)
             return 1
         else:
-            error("E203")
             send_to_display = format_length(top_line) + format_length(bottom_line)
             lcd.write_string(send_to_display)
             return 1
@@ -336,25 +360,35 @@ def update_display(top_line, bottom_line):
         error("E107")
 
 
-def hardware_button_input():
+def hardware_button_input(allow_idle=False):
     # Input detection for flight mode
     sleep_delay = configuration["rep_delay"]
-    print("awaiting input...")
+    last_interaction_time = time.time()
+    #print("awaiting input...")
     while True:
         if GPIO.input(GPIO_BACK) == GPIO.LOW:
-            print("input detected: back")
+            #print("input detected: back")
             sleep(sleep_delay)
             return "back"
-            
+
         if GPIO.input(GPIO_SELECT) == GPIO.LOW:
-            print("input detected: select")
+            #print("input detected: select")
             sleep(sleep_delay)
             return "select"
-            
+
         if GPIO.input(GPIO_CYCLE) == GPIO.LOW:
-            print("input detected: cycle")
+            #print("input detected: cycle")
             sleep(sleep_delay)
             return "cycle"
+
+        if allow_idle:
+            if (time.time() - last_interaction_time) > IDLE_TIME:
+                error("E904", "Entering idle mode...")
+                con_about()
+                last_interaction_time = time.time()
+                error("E905", "Exiting idle mode")
+
+
 
 
 
@@ -451,7 +485,7 @@ def display_format(top, bottom, default=True):
         bottom_line = format_length(bottom, new_len, new_vowel)
 
     return top_line, bottom_line
-    
+
 
 def wait_select():
     # Waits for "select" confirmation
@@ -510,14 +544,24 @@ def sys_startup_animation():
 
 
 def sys_startup():
+    # Everything in here is done as part of the loading screen
+    GPIO.output(GPIO_LIGHT, GPIO.HIGH)
+    error("E903", "PARKES WAKEUP")
+    error("E904", "Startup initiated")
 
     sleep(1)
     update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN),  format_length("loading", DEFAULTLEN))
     sleep(0.4)
 
+    # Assign ID number
+    configuration["parkes_id"] = sys_id_gen()
+
+
     sys_startup_animation()
     update_display(format_length("", DEFAULTLEN), format_length(" READY", DEFAULTLEN))
     sleep(1.2)
+    GPIO.output(GPIO_LIGHT, GPIO.LOW)
+    error("E905", "Startup complete")
 
 def con_delay():
     # Config: set delay for button input recog
@@ -533,12 +577,14 @@ def con_beep():
     if new_val != "!":
         configuration["beep_volume"] = int(new_val)
 
+
 def con_reboot():
     # Config: set reboot status
     result = yesno("SURE REBOOT?")
     if result == True:
         configuration["go_reboot"] = True
         configuration["go_kill"] = False
+
 
 def con_shutdown():
     # Config: set shutdown status
@@ -549,8 +595,9 @@ def con_shutdown():
 
 
 def con_about():
-    # About the program
-    top_line, bottom_line = format_length("PARKES v" + str(parkes_version), DEFAULTLEN), format_length("novae space 2020")
+    # About the program - also used for idle screen
+    top_line = "  PARKES v" + str(parkes_version) + "   "
+    bottom_line = format_length("   novae 2021   ")
     update_display(top_line, bottom_line)
     wait_select()
 
@@ -571,7 +618,6 @@ def con_clear():
 
 def con_display():
     # Config: display all current config values
-
     conf_list = [con for con in configuration.keys()]
 
     current = 0
@@ -629,7 +675,7 @@ def cne_status():
 
 def check_vamp_string(vamp):
     # Takes vamp as string and makes sure it conforms to standard
-    
+
     vamp_decom = []
     for element in vamp.split("_"):
         vamp_decom = element[1:]
@@ -648,9 +694,10 @@ def check_vamp_tuple(vamp):
         if VAMP_TUPLE_STANDARD[vamp.index(element)] != len(str(element)):
             error("E123")
 
-def cne_open_port():
+def cne_open_port(user_conf=True):
     global parkes_radio
     # Opens the default port for Parkes transceiver
+
     parkes_radio = serial.Serial(
         port = "/dev/serial0",
         baudrate = 9600,
@@ -661,6 +708,8 @@ def cne_open_port():
         # You might need a timeout here if it doesn't work, try a timeout of 1 sec
         )
     error("E910", "opened port - parkes_radio")
+    if user_conf is True:
+        confirm("PORT OPENED")
 
 def cne_send(vamp):
     # Sends command over radio
@@ -676,7 +725,7 @@ def cne_send(vamp):
 def cne_receive(override_timeout=False, timeout_set=5):
     # Receives for command from parkes_radio - waits indefinitely
     # unless timeout is specified
-    
+
     if override_timeout:
         parkes_radio.timeout = timeout_set
         data = parkes_radio.read_until()
@@ -814,7 +863,7 @@ def dsp_handshake(status):
 
 def cne_handshake():
     # Function to initiate connection between Vega and Parkes for heartbeat
-    # support. 
+    # support.
     global configuration
     dsp_handshake(False)
     handshake_confirmed = False
@@ -962,7 +1011,7 @@ def cne_hb_menu():
 
 def cne_connect():
     global configuration
-    cne_open_port()
+    cne_open_port(False)
     cne_handshake()
     configuration["telemetry"]["connected"] = True
 
@@ -999,12 +1048,13 @@ def cne_vfs_update():
         confirm("UPDATE COMPLETE")
 
 def cne_vfs_compiler():
-     cne_open_port()
+     cne_open_port(False)
      compile_vamp = (10000, 1000, 4, 00000)
      confirm("VFS LOG COMPILER")
 
      # Loop to send handshake / await response
      cne_send(compile_vamp)
+     confirm("COMMAND SENT")
 
 
 def cne_vfs_menu():
@@ -1035,6 +1085,17 @@ def sys_connect():
     dsp_menu(connect_func_dict, "CONNECT")
     # Exit to menu, don't write below here
 
+def sys_debug():
+    global configuration
+
+    debug_func_dict = {
+        1 : ["HARDWARE DIAG", bug_hardware_diag]
+        }
+
+    dsp_menu(debug_func_dict, "DEBUG")
+        # Exit to menu, don't write below here
+    # Exit to menu, don't write below here
+
 def sys_config():
     # Main: select config function
     global configuration
@@ -1048,12 +1109,28 @@ def sys_config():
         6 : ["REBOOT", con_reboot],
         7 : ["ERROR TEST", con_etest],
         8 : ["SHUTDOWN", con_shutdown],
-        9 : ["ABOUT", con_about]
+        9 : ["ABOUT", con_about],
+        10 : ["DEBUG", sys_debug]
         }
 
     dsp_menu(config_func_dict, "CONFIG")
         # Exit to menu, don't write below here
     # Exit to menu, don't write below here
+
+def sys_id_gen():
+    # produces random ID_LEN-digit ID for file generation
+    id = ""
+
+    for digit in range(ID_LEN):
+        # create random digit from 0-9
+        new_digit = str(randint(0,9))
+        id += new_digit
+
+    return id
+
+
+
+
 
 
 def lch_hotfire():
@@ -1204,7 +1281,7 @@ def lch_countdown():
     if continue_launch:
         # Passed launch checks, proceed with ignition command
         sys_fire(sys_check_arm(), True)
-        
+
         top_line = format_length("    COUNTDOWN   ")
         bottom_line = format_length("    ignition    ")
         error("E999", "ignition")
@@ -1272,8 +1349,8 @@ def lch_launch_program():
     lch_countdown()
 
 def lch_force_launch():
-    cne_open_port()
     # Forces launch, skipping prep and arm phase. Used for testing only. May be removed from use
+    cne_open_port(False)
     error("E210")
     force_vamp = (10000, 1000, 2, 00000)
     confirm("FORCE CMMND SENT")
@@ -1284,8 +1361,8 @@ def lch_force_launch():
     lch_downlink()
 
 def lch_loop():
-    cne_open_port()
     # Forces launch, skipping prep and arm phase. Used for testing only. May be removed from use
+    cne_open_port(False)
     error("E210")
     force_vamp = (10000, 1000, 3, 00000)
     confirm("FORCE LOOP SENT")
@@ -1296,7 +1373,8 @@ def lch_loop():
     lch_downlink()
 
 def lch_arm():
-    cne_open_port()
+    # arms vega for flight
+    cne_open_port(False)
     arm_vamp = (10000, 1000, 0, 00000)
     # Loop to send handshake / await response
     cne_send(arm_vamp)
@@ -1365,9 +1443,9 @@ def sys_shutdown_process():
     error("E900", "Shutdown process initiated")
     sleep(4)
 
-    top_line, bottom_line = format_length("", DEFAULTLEN), format_length(" done", DEFAULTLEN)
+    top_line, bottom_line = format_length(" ", DEFAULTLEN), format_length(" done", DEFAULTLEN)
     error("E901", "Shutdown process complete")
-    update_display(top_line, bottome_line)
+    update_display(top_line, bottom_line)
     sleep(2)
 
 def sys_type_get(newval):
@@ -1401,8 +1479,7 @@ def sys_startup_tests(ex_value, config_vals):
 
     return True, "tests_passed"
 
-# Parkes Configuration Interpreter 2.0 - PCI2.0
-
+# Parkes Configuration Interpreter 2.0 - PCI2.0c
 def cfg_type_set(definition):
 
     def_type = sys_type_get(definition)
@@ -1447,8 +1524,9 @@ def cfg_telemetry(data):
             configuration["telemetry"] = {"active": False, "connected": False, "sig_strength": 0, "hb_active": False, "hb_data":[], "hb_sigstrn":0, "hb_force_kill": False}
 
 def cfg_errlog(data):
+    global configuration
     if data == "init":
-        sys_file_init("parkes_errorlog.txt", "PARKES ERROR LOG")
+        sys_file_init("parkes_errorlog.txt", "PARKES ERROR LOG", configuration["parkes_id"])
 
     elif data == "clear":
         new_file = open("parkes_errorlog.txt", "w")
@@ -1538,6 +1616,113 @@ def sys_startup_test():
             error(startup_errors[reason], "startup_error: " + reason)
     else:
             error("E101")
+
+def bug_hardware_inp(input_name, input_pin):
+    # tests individual hardware components\
+    display_off = "---[ ]----------"
+    display_on = "---[x]----------"
+
+
+    break_loop = False
+    has_changed = False
+
+    topline = "testing: " + format_length(input_name)
+    bottomline = display_off
+    start_time = 0
+    hold_time = 3
+    update_display(topline, bottomline)
+
+    while not break_loop:
+
+        if sys_check_status(input_pin):
+            if not has_changed:
+                bottomline = display_on
+                start_time = time.time()
+                update_display(topline, bottomline)
+                has_changed = True
+
+            if (time.time() - start_time) > hold_time:
+                break_loop = True
+
+        else:
+            if has_changed:
+                start_time = 0
+                bottomline = display_off
+                update_display(topline, bottomline)
+                has_changed = False
+
+def bug_hardware_out(output_name, output_pin):
+    # tests outputs of given lights
+    topline = "testing: " + format_length(output_name)
+    display_off = "---[ ]----------"
+    display_on = "---[x]----------"
+    bottomline = display_off
+
+    update_display(topline, bottomline)
+    seco, counter = 0, 1
+
+    sleep(1)
+    GPIO.output(output_pin, GPIO.HIGH)
+    bottomline = display_on
+    update_display(topline, bottomline)
+    sleep(1)
+    GPIO.output(output_pin, GPIO.LOW)
+    bottomline = display_off
+    update_display(topline, bottomline)
+    sleep(1)
+
+
+    while counter > 0:
+
+        GPIO.output(output_pin, GPIO.HIGH)
+        bottomline = display_on
+        update_display(topline, bottomline)
+        sleep(counter)
+        GPIO.output(output_pin, GPIO.LOW)
+        bottomline = display_off
+        update_display(topline, bottomline)
+        sleep(counter)
+        counter -= 0.1
+
+        if seco < 10 and counter < 0.1:
+            counter += 0.1
+            seco += 1
+
+
+
+
+def bug_hardware_diag():
+    # used to loop through and test hardware
+
+    hardware_input = {
+        "missile" : GPIO_MISSILE,
+        "key"     : GPIO_ARM,
+        "launch"  : GPIO_LAUNCH,
+        "back"    : GPIO_BACK,
+        "select"  : GPIO_SELECT,
+        "cycle"   : GPIO_CYCLE
+        }
+
+    hardware_output = {
+        "light"   : GPIO_LIGHT
+    }
+
+    confirm("HARDWARE DIAG")
+    confirm("testing input...")
+
+    for input in hardware_input.keys():
+        bug_hardware_inp(input, hardware_input[input])
+        sleep(1)
+
+    for output in hardware_output.keys():
+        bug_hardware_out(output, hardware_output[output])
+        sleep(1)
+
+    confirm("DIAG COMPLETE")
+
+
+
+
 
 
 # Main running loop
