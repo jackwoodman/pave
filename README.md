@@ -18,7 +18,7 @@ Vega Flight Software:
  - live data downlink over radio
  - flight comms links
  
-Prelude Launch Software:
+Epoch Launch Software:
  - commands ignition of up to three engines simultaneously
  - controls launch clamps, LEDS, and other launchpad functionality
  - receives launch commands from Parkes wirelessly, negates need for wires
