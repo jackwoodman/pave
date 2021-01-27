@@ -1,5 +1,5 @@
 # pgs
-# internal verion 0.5.7
+# internal verion 0.5.8
 
 '''
     ==========================================================
@@ -14,19 +14,23 @@
 import time
 import serial
 import threading
+import copy
+import filecmp
 from math import floor
 from time import sleep
 import RPi.GPIO as GPIO
 from random import randint
 from datetime import datetime
 from RPLCD import CharLCD
+import os
 
 # hot_run defines whether Parkes will run using hardware or simulation.
+global hot_run
 hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = False
 parkes_version = 0.5
-internal_version = "0.5.7"
+internal_version = "0.5.8"
 
 
 # Constants
@@ -36,14 +40,14 @@ IDLE_TIME = 35
 ID_LEN = 10
 
 # Default pin constants for GPIO in/out
-GPIO_BACK = 16
-GPIO_SELECT = 18
-GPIO_CYCLE = 22
-GPIO_ARM = 13
-GPIO_MISSILE = 15
-GPIO_LAUNCH = 11
-GPIO_IGNITOR = 12
-GPIO_LIGHT = 32
+GPIO_BACK = 16     # back button input
+GPIO_SELECT = 18   # select button input
+GPIO_CYCLE = 22    # cycle button input
+GPIO_ARM = 13      # arm keyswitch input
+GPIO_MISSILE = 15  # missile switch input
+GPIO_LAUNCH = 11   # launch button input
+GPIO_IGNITOR = 12  # ignitor trigger output
+GPIO_LIGHT = 32    # launch light output
 
 DEFAULT_NUMSEL = [1,2,3,4,5,6,7,8,9]
 VAMP_STRING_STANDARD = {"v":5, "a":4, "m": 1, "p":5}
@@ -51,7 +55,7 @@ VAMP_TUPLE_STANDARD = {0:5, 1:4, 2:1 , 3:5}
 
 
 
-# LCD SETUP
+# Initial LCD Setup
 lcd = CharLCD(cols=16,
               rows=2,
               pin_rs=37,
@@ -72,18 +76,22 @@ GPIO.setup(GPIO_MISSILE, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Arm key - GPIO 22
 GPIO.setup(GPIO_LAUNCH, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Launch button - GPIO 17
 GPIO.setup(GPIO_LIGHT, GPIO.OUT) # Light  - GPIO 17
 
+# Defining Hardware Output
+GPIO.setup(GPIO_IGNITOR, GPIO.OUT) # Ignition Output - GPIO 18
+
 def sys_check_status(gpio_pin):
+    # check if input pin is pulled low or not
     if GPIO.input(gpio_pin) == GPIO.LOW:
         return True
     else:
         return False
 
 
-# Defining Hardware Output
-GPIO.setup(GPIO_IGNITOR, GPIO.OUT) # Ignition Output - GPIO 18
+
 
 global configuration
 configuration = {
+    # super important configuration dictionary that has become severely bloated
     "go_reboot": True,
     "go_kill": False,
     "vfs_update_queue": []
@@ -105,6 +113,7 @@ def sys_check_launch():
 def sys_check_cont():
     # Not-yet-implemeneted function to check for continuity in launchpad
     # will likely be removed as from pre-Epoch ignition system
+    # still here because backwards compat
     return True
 
 def sys_fire(arm, ignition):
@@ -115,6 +124,8 @@ def sys_fire(arm, ignition):
         GPIO.output(GPIO_IGNITOR, GPIO.LOW)
 
 def sys_epoch_fire(arm, ignition):
+    print("firing...")
+
     # commands epoch to fire
     if arm and ignition:
         # fire command
@@ -122,12 +133,12 @@ def sys_epoch_fire(arm, ignition):
         command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
         parkes_radio.write(command.encode())
 
+
         # get confirmation
-        new_command = vamp_destruct(receive())
-        flight_logger("COMMAND: " + str(new_command), duration())
+        new_command = cne_vamp_destruct(cne_receive())
 
         target_program = new_command[2]
-        target_comp = new_command[3][0]
+        target_comp = int(str(new_command[3])[0])
 
         if target_comp == COMP_ID and target_program == 9:
             return 1
@@ -201,6 +212,7 @@ def dsp_error_nonfatal(code):
                 break
 
 def dsp_error_fatal(code):
+    # Handle fatal errors
     top_line = "ERROR:  " + format_length(code, 8)
     bottom_line = " FATAL ERROR    "
 
@@ -209,6 +221,7 @@ def dsp_error_fatal(code):
         waiting = True
 
 def dsp_error_warning(code):
+    # Handle warning errors
     top_line = "ERROR:  " + format_length(code, 8)
     bottom_line = "   |CONTINUE|   "
 
@@ -216,6 +229,7 @@ def dsp_error_warning(code):
     wait_select()
 
 def dsp_error_passive(code):
+    # handle system passive errors
     passive_error = code
 
 def dsp_error_sysmess(code):
@@ -238,18 +252,24 @@ def error(e_code, data=None):
 
     # Error display
     if e_code[1] in error_codes.keys():
+        # If error code is correct
 
         new_error = "- " + error_codes[e_code[1]][1] + " ("+str(e_code)+")"
 
         if data:
+            # if data exists, add to log
             new_error += " => "
             new_error += str(data)
 
+        # display error in consol and add to errorlog
         print(new_error)
         sys_file_append("parkes_errorlog.txt", new_error)
 
+        #run associated error function
         error_type(e_code)
+
     else:
+        # error code is incorrect
         error("E199", e_code)
 #===============================================#
 
@@ -324,6 +344,7 @@ def format_length(input_string, length=DEFAULTLEN, remove_vowel=False, alignment
     return output_string
 
 def button_input(allow_idle=False):
+    # Returns result of UI interaction
     if hot_run:
         return hardware_button_input(allow_idle)
 
@@ -382,6 +403,7 @@ def hardware_button_input(allow_idle=False):
             return "cycle"
 
         if allow_idle:
+            # if idle display is allowed, check if needs to show
             if (time.time() - last_interaction_time) > IDLE_TIME:
                 error("E904", "Entering idle mode...")
                 con_about()
@@ -427,11 +449,11 @@ def software_update_display(display_input):
     print("|________________|\n")
 
 
-def num_select(message, values):
-    # Basic number selection UI, returns integer value
-    current_num, builder, original = values[0], [values[0]], values
-    top_line = message
-    count = 0
+def num_select(message, values, cur_val=1):
+    # Basic number selection UI, returns integer value AS STRING
+    template, top_line = copy.copy(values), message
+    current_num, builder, original = template[0], [template[0]], template
+    count, has_run = 0, False
 
     # Pad missing spaces
     for i in range(DEFAULTLEN - len(message)):
@@ -440,6 +462,15 @@ def num_select(message, values):
     while True:
         for number in original:
             builder.append(number)
+
+        # If first loop, start at the current value
+        if not has_run:
+            while builder[0] != cur_val:
+                original.append(original.pop(0))
+                builder = [original[0]]
+            has_run = True
+            continue
+
 
         num_list = builder[1:]
         number_list = [x for x in num_list]
@@ -470,6 +501,8 @@ def num_select(message, values):
             return bottom_line[1]
 
         elif choose == "back":
+            # When this function is called, "!" is used to handle a
+            # back button press.
             return "!"
 
 def display_format(top, bottom, default=True):
@@ -554,7 +587,7 @@ def sys_startup():
     sleep(0.4)
 
     # Assign ID number
-    configuration["parkes_id"] = sys_id_gen()
+    configuration["parkes_id"] = cfg_id_gen()
 
 
     sys_startup_animation()
@@ -573,7 +606,7 @@ def con_delay():
 def con_beep():
     # Config: set volume for beeper
     global configuration
-    new_val =str(num_select("SELECT VOLUME:", DEFAULT_NUMSEL))
+    new_val = str(num_select("SELECT VOLUME:", DEFAULT_NUMSEL))
     if new_val != "!":
         configuration["beep_volume"] = int(new_val)
 
@@ -637,6 +670,12 @@ def con_display():
                 current += 1
             else:
                 current = 0
+
+        elif choose == "select":
+            bottom_line = format_length(str(configuration[current_con]))
+            update_display(top_line, bottom_line)
+            wait_select()
+
         elif choose == "back":
             break
 
@@ -1069,6 +1108,94 @@ def cne_vfs_menu():
     dsp_menu(vfs_config_dict, "VFS CONFIG")
     # Exit to menu, don't write below here
 
+def cne_update_cleanup():
+    os.system("rm " + update_folder)
+
+def cne_update():
+    global configuration
+
+    update_folder = "update_tool"
+    update_target = "/" + update_folder + "/parkes_master.py"
+    grab_command = "scp jackwoodman@corvette.local:/Users/jackwoodman/Desktop/novae/parkes_master.py /home/pi/" + update_folder
+
+    top_line = format_length("PGS UPDATE TOOL")
+    bottom_line = format_length("finding update..")
+    update_display(top_line, bottom_line)
+    # create temporary folder
+    os.system("mkdir " + update_folder)
+
+    try:
+        os.system(grab_command)
+
+    except:
+        bottom_line = "search failed!  "
+        error("E352", "update failed - could not connect to Corvette")
+
+        update_display(top_line, bottom_line)
+        wait_select()
+        return
+
+    # check if same
+    try:
+        comparison = filecmp.cmp("parkes_master.py", update_target)
+    except:
+        error("E350", "PGS update comparison failed")
+
+    # check if update is required or not
+    if comparison:
+        update_display(top_line, bottom_line)
+        bottom_line = "no updates!"
+        error("E351", "no PGS updates found")
+        wait_select()
+        cne_update_cleanup()
+        return
+
+    else:
+        update_display(top_line, bottom_line)
+        bottom_line = "update found!"
+        wait_select()
+
+        bottom_line = "updating..."
+
+        # copy new file across to old file
+        try:
+            os.system("cp -f parkes_master.py " + update_target)
+
+        except:
+            bottom_line = "update failed!  "
+            error("E352", "update failed - could not update file")
+            update_display(top_line, bottom_line)
+            wait_select()
+            cne_update_cleanup()
+            return
+
+    # check the update has worked
+    if not filecmp.cmp("parkes_master.py", update_target):
+        bottom_line = "update failed!  "
+        error("E353", "update failed - update corruption detected")
+        update_display(top_line, bottom_line)
+        wait_select()
+        cne_update_cleanup()
+        return
+
+    bottom_line = "update success! "
+    update_display(top_line, bottom_line)
+    wait_select()
+
+    bottom_line = format_length("cleaning up...")
+    update_display(top_line, bottom_line)
+
+
+    os.system("rm " + update_folder)
+    sleep(4)
+
+    bottom_line = "reboot to finish"
+    update_display(top_line, bottom_line)
+    wait_select()
+
+    # runs recursive iteration of self, to work until next full shutdown
+    os.system("python3 parkes_master.py")
+
 
 
 def sys_connect():
@@ -1089,7 +1216,8 @@ def sys_debug():
     global configuration
 
     debug_func_dict = {
-        1 : ["HARDWARE DIAG", bug_hardware_diag]
+        1 : ["HARDWARE DIAG", bug_hardware_diag],
+        2 : ["HOTRUN SET", bug_hotrun]
         }
 
     dsp_menu(debug_func_dict, "DEBUG")
@@ -1117,16 +1245,6 @@ def sys_config():
         # Exit to menu, don't write below here
     # Exit to menu, don't write below here
 
-def sys_id_gen():
-    # produces random ID_LEN-digit ID for file generation
-    id = ""
-
-    for digit in range(ID_LEN):
-        # create random digit from 0-9
-        new_digit = str(randint(0,9))
-        id += new_digit
-
-    return id
 
 
 
@@ -1191,9 +1309,74 @@ def lch_hotfire():
         top_line, bottom_line =  display_format("    COUNTDOWN   ", "    ignition    ")
         sleep(10)
 
+def lch_epoch_fire():
+    cne_open_port()
+    sure_go = yesno("HOTFIRE EPOCH?")
+    if not sure_go:
+        return
+
+    sleep(2)
+
+    top_line = format_length("DISARMED")
+    bottom_line = format_length("key to arm...")
+    hold, armed = True, False
+
+
+    while hold:
+        update_display(top_line, bottom_line)
+        if sys_check_arm() and sys_check_status(GPIO_MISSILE):
+            GPIO.output(GPIO_LIGHT, GPIO.HIGH)
+            top_line = format_length("ARMED!")
+            bottom_line = format_length("ready...")
+
+            armed = True
+        else:
+            GPIO.output(GPIO_LIGHT, GPIO.LOW)
+            top_line = format_length("DISARMED")
+            bottom_line = format_length("key to arm...")
+            armed = False
+
+        if armed and sys_check_launch():
+            hold = False
+        sleep(0.2)
+
+    top_line = format_length("AUTOSEQUENCE")
+    bottom_line = format_length("-----active-----")
+    update_display(top_line, bottom_line)
+
+    sleep(4)
+    # COUNTDOWN
+    continue_launch = True
+    for count in range(11):
+        current = str(10 - count).zfill(2)
+        top_line = format_length("    COUNTDOWN   ")
+        bottom_line = format_length("      |"+current+"|      ")
+        update_display(top_line, bottom_line)
+        sleep(0.95)
+        if not sys_check_arm():
+            top_line, bottom_line =  display_format("DISARMED", "ending countdown")
+            update_display(top_line, bottom_line)
+            sleep(3)
+            continue_launch = False
+            break
+
+    if continue_launch:
+        com_res = sys_epoch_fire(sys_check_arm(), True)
+
+        if com_res == 1:
+            top_line, bottom_line =  display_format("EPOCH CONFIRM", "    ignition    ")
+            update_display(top_line, bottom_line)
+            wait_select()
+
+
+
+
+
+
+
 
 def lch_flight_configure():
-    # Parkes flight configuration set
+    # all functions required to prepare for flight
     GPIO.output(GPIO_IGNITOR, GPIO.LOW)
 
     return True
@@ -1410,7 +1593,8 @@ def sys_launch():
         3 : ["LAUNCH", lch_force_launch],
         4 : ["HOTFIRE", lch_hotfire],
         5 : ["DOWNLINK", lch_downlink],
-        6 : ["LCH LOOP", lch_loop]
+        6 : ["LCH LOOP", lch_loop],
+        7 : ["EPOCH FIRE", lch_epoch_fire]
         }
 
     current_select = 1
@@ -1436,6 +1620,7 @@ def sys_main_menu():
             dsp_menu(main_func_dict, title)
 
 def sys_shutdown_process():
+    # Function to handle all the pre-shutdown cleanup
 
     sleep(1)
     top_line, bottom_line = "PARKES v" + str(parkes_version) + "     ", format_length("shutting down", DEFAULTLEN)
@@ -1481,6 +1666,8 @@ def sys_startup_tests(ex_value, config_vals):
 
 # Parkes Configuration Interpreter 2.0 - PCI2.0c
 def cfg_type_set(definition):
+    # function takes string description of desired type and converts
+    # input to required type
 
     def_type = sys_type_get(definition)
 
@@ -1500,6 +1687,7 @@ def cfg_type_set(definition):
         return str(definition)[:-1]
 
 def cfg_set_value(content):
+    # recevies set value command and passes value name and res to type_set
     global configuration
     value = content[1:]
 
@@ -1508,12 +1696,14 @@ def cfg_set_value(content):
 
 
 def cfg_homedir(data):
+    # allow config to set new home dir
     global configuration
     home_dir = data[4:]
 
     configuration["home_dir"] = home_dir
 
 def cfg_telemetry(data):
+    # telem configuration functions
     global configuration
 
     if data == "init":
@@ -1524,6 +1714,7 @@ def cfg_telemetry(data):
             configuration["telemetry"] = {"active": False, "connected": False, "sig_strength": 0, "hb_active": False, "hb_data":[], "hb_sigstrn":0, "hb_force_kill": False}
 
 def cfg_errlog(data):
+    # error log configuration functions
     global configuration
     if data == "init":
         sys_file_init("parkes_errorlog.txt", "PARKES ERROR LOG", configuration["parkes_id"])
@@ -1533,6 +1724,7 @@ def cfg_errlog(data):
         new_file.close()
 
 def cfg_exval(data):
+    # handles value set with expected value
     global expected_value
     if data == "init":
         expected_value = 0
@@ -1570,61 +1762,95 @@ def cfg_include_vega():
 def cfg_kill_setup():
     return
 
+def cfg_id_gen():
+    # produces random ID_LEN-digit ID for file generation
+    id = ""
+
+    for digit in range(ID_LEN):
+        # create random digit from 0-9
+        new_digit = str(randint(0,9))
+        id += new_digit
+
+    return id
+
+
 
 def sys_config_interpreter(config_file):
+    # func accepts configuration file and interprets it
+
+    # list of line identifiers
     identifier_type = {
         "!" : "value",
         "$" : "command"
     }
 
+    #possible configuration commands
     config_commands = {
         "ignore_startup_tests" : cfg_startuptest_modify,
         "end_setup" : cfg_kill_setup,
         "expect_vega" : cfg_include_vega
     }
+
     config_lines = config_file.readlines()
 
     for entry in config_lines:
+
         if entry[0] not in identifier_type.keys():
+            # could not identify identifier
             continue
+
         identifier, content = entry[0], entry[1:]
 
         if identifier_type[identifier] == "value":
+            # pass detected value set off to value set func
             cfg_set_value(content)
 
         elif identifier_type[identifier] == "command":
+            # command detected
 
             if "." in content:
+                # unique command detected, pass to command runner
                 target, command = content.split(".")
 
                 cfg_run_command(target, command.rstrip())
 
             else:
+                # predefined command detected, run command
                 command = content.rstrip()
-
                 config_commands[command]()
 
 def sys_startup_test():
+    # function to run startup tests as required
     startup_errors = {
         "p_v_failure"  :  "E105",
         "c_v_failure"  :  "E103",
         "c_f_failure"  :  "E106"
         }
+
     passed_test, reason = sys_startup_tests(expected_value, configuration)
 
     if passed_test and reason in startup_errors.keys():
-            error(startup_errors[reason], "startup_error: " + reason)
+        # error passing startup tests, log error and reason
+        error(startup_errors[reason], "startup_error: " + reason)
     else:
-            error("E101")
+        # unknown error found
+        error("E101")
+
+def bug_hotrun():
+    # Allows for on the fly switching between hardware and software UI
+    global hot_run
+
+    hot_run = yesno("SET HOTRUN?")
+
+    confirm("CONFIRM OK")
+    error("E333", "hotrun set - " + str(hot_run))
+
 
 def bug_hardware_inp(input_name, input_pin):
     # tests individual hardware components\
     display_off = "---[ ]----------"
     display_on = "---[x]----------"
-
-
-    break_loop = False
-    has_changed = False
+    break_loop, has_changed = False, False
 
     topline = "testing: " + format_length(input_name)
     bottomline = display_off
@@ -1635,17 +1861,22 @@ def bug_hardware_inp(input_name, input_pin):
     while not break_loop:
 
         if sys_check_status(input_pin):
+            # if input has been activated
             if not has_changed:
+                # start of new unique input press, begin timer
                 bottomline = display_on
                 start_time = time.time()
                 update_display(topline, bottomline)
                 has_changed = True
 
             if (time.time() - start_time) > hold_time:
+                # checks if given input has been held for required time
                 break_loop = True
 
         else:
+            # input is not detected
             if has_changed:
+                # input is flipping from true to false, update display
                 start_time = 0
                 bottomline = display_off
                 update_display(topline, bottomline)
@@ -1659,8 +1890,9 @@ def bug_hardware_out(output_name, output_pin):
     bottomline = display_off
 
     update_display(topline, bottomline)
-    seco, counter = 0, 1
+    seco, counter, loop_extend = 0, 1, 10
 
+    # flip high and low, wait 2 seconds
     sleep(1)
     GPIO.output(output_pin, GPIO.HIGH)
     bottomline = display_on
@@ -1669,22 +1901,26 @@ def bug_hardware_out(output_name, output_pin):
     GPIO.output(output_pin, GPIO.LOW)
     bottomline = display_off
     update_display(topline, bottomline)
-    sleep(1)
+    sleep(2)
 
 
     while counter > 0:
+        # loop that flips output high and low with reduced delay
 
         GPIO.output(output_pin, GPIO.HIGH)
         bottomline = display_on
         update_display(topline, bottomline)
         sleep(counter)
+
         GPIO.output(output_pin, GPIO.LOW)
         bottomline = display_off
         update_display(topline, bottomline)
         sleep(counter)
+
         counter -= 0.1
 
-        if seco < 10 and counter < 0.1:
+        if seco < loop_extend and counter < 0.1:
+            # extends loop for loop_extend iterations
             counter += 0.1
             seco += 1
 
@@ -1701,7 +1937,7 @@ def bug_hardware_diag():
         "back"    : GPIO_BACK,
         "select"  : GPIO_SELECT,
         "cycle"   : GPIO_CYCLE
-        }
+    }
 
     hardware_output = {
         "light"   : GPIO_LIGHT
@@ -1711,40 +1947,48 @@ def bug_hardware_diag():
     confirm("testing input...")
 
     for input in hardware_input.keys():
+        # test all hardware inputs
         bug_hardware_inp(input, hardware_input[input])
         sleep(1)
 
+    confirm("testing output...")
+
     for output in hardware_output.keys():
+        # test all hardware outputs
         bug_hardware_out(output, hardware_output[output])
         sleep(1)
 
     confirm("DIAG COMPLETE")
-
-
-
-
-
 
 # Main running loop
 while configuration["go_reboot"] and not configuration["go_kill"]:
     global run_startup_test
     global exptected_value
     global vega_in_loop
+
     run_startup_test, expected_value, configuration["go_reboot"], vega_in_loop = True, 0, False, False
     config_file = open("/home/pi/parkes_config.txt", "r")
-    #config_lines = config_file.readlines()
 
+    # run startup functions and setup processes
+    sys_startup()
+
+    # pass config file to file interpreter to complete config
     sys_config_interpreter(config_file)
 
+    # run startup tests if required
     if run_startup_test:
         sys_startup_test()
 
     config_file.close()
-    sys_startup()
+
     lcd.clear()
     sys_main_menu()
 
 
-
+# If we're here, we've left the running loop. Time to clean up.
 sys_shutdown_process()
 lcd.clear()
+
+# clean shutdown, disconnects SSH and prevents SD corruption
+from subprocess import call
+call("sudo poweroff", shell=True)
