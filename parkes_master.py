@@ -1,28 +1,29 @@
 # pgs
-# internal verion 0.5.8
+# internal verion 0.5.12
 
 '''
     ==========================================================
     Parkes Ground Software, version 0.5
-    Copyright (C) 2020 Jack Woodman - All Rights Reserved
+    Copyright (C) 2021 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
     * terms of the GNU GPLv3 license.
     ==========================================================
 '''
 
+import os
 import time
 import serial
 import threading
 import copy
 import filecmp
+import RPi.GPIO as GPIO
 from math import floor
 from time import sleep
-import RPi.GPIO as GPIO
 from random import randint
 from datetime import datetime
 from RPLCD import CharLCD
-import os
+
 
 # hot_run defines whether Parkes will run using hardware or simulation.
 global hot_run
@@ -30,7 +31,7 @@ hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = False
 parkes_version = 0.5
-internal_version = "0.5.8"
+internal_version = "0.5.12"
 
 
 # Constants
@@ -49,10 +50,18 @@ GPIO_LAUNCH = 11   # launch button input
 GPIO_IGNITOR = 12  # ignitor trigger output
 GPIO_LIGHT = 32    # launch light output
 
-DEFAULT_NUMSEL = [1,2,3,4,5,6,7,8,9]
+DEFAULT_NUMSEL = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 VAMP_STRING_STANDARD = {"v":5, "a":4, "m": 1, "p":5}
 VAMP_TUPLE_STANDARD = {0:5, 1:4, 2:1 , 3:5}
 
+
+global configuration
+configuration = {
+    # super important configuration dictionary that has become severely bloated
+    "go_reboot": True,
+    "go_kill": False,
+    "vfs_update_queue": []
+    }
 
 
 # Initial LCD Setup
@@ -79,23 +88,38 @@ GPIO.setup(GPIO_LIGHT, GPIO.OUT) # Light  - GPIO 17
 # Defining Hardware Output
 GPIO.setup(GPIO_IGNITOR, GPIO.OUT) # Ignition Output - GPIO 18
 
+
+
+# System Functions
+
+def sys_main_status():
+    # checks if shutdown flags are true, used within function loops
+    reboot, kill = configuration["go_reboot"], configuration["go_kill"]
+
+    if reboot and not kill:
+        return "REBOOT"
+
+    elif not reboot and kill:
+        return "KILL"
+
+    else:
+        return "CONTINUE"
+
+
+def sys_set_output(gpio_pin, status):
+    # set output status
+
+    if status:
+        GPIO.output(gpio_pin, GPIO.HIGH)
+    else:
+        GPIO.output(GPIO_LIGHT, GPIO.LOW)
+
 def sys_check_status(gpio_pin):
     # check if input pin is pulled low or not
     if GPIO.input(gpio_pin) == GPIO.LOW:
         return True
     else:
         return False
-
-
-
-
-global configuration
-configuration = {
-    # super important configuration dictionary that has become severely bloated
-    "go_reboot": True,
-    "go_kill": False,
-    "vfs_update_queue": []
-    }
 
 
 def sys_check_arm():
@@ -135,14 +159,21 @@ def sys_epoch_fire(arm, ignition):
 
 
         # get confirmation
-        new_command = cne_vamp_destruct(cne_receive())
+        new_command = cne_receive(override_timeout=True, timeout_set=5)
 
-        target_program = new_command[2]
-        target_comp = int(str(new_command[3])[0])
+        if str(new_command) == "timeout":
+            return 2
+
+        final_command = cne_vamp_destruct(new_command)
+
+        target_program = final_command[2]
+        target_comp = int(str(final_command[3])[0])
 
         if target_comp == COMP_ID and target_program == 9:
             return 1
         else:
+            # epoch isn't ok to fire for whatever reason
+            # TO-DO: sort reason from reason
             return 0
 
 
@@ -158,7 +189,7 @@ def sys_file_init(target_file, title, id="unavailable"):
     bottom_line = "-" * len(top_line) + "\n"
     new_file = open(target_file, "w")
     new_file.write(top_line)
-    new_file.write("Parkes Version: " + str(parkes_version) + "\n")
+    new_file.write("Software Version: " + str(internal_version) + "\n")
     new_file.write("Parkes ID: " + str(id) + "\n")
     new_file.write(bottom_line)
     new_file.write("")
@@ -273,19 +304,32 @@ def error(e_code, data=None):
         error("E199", e_code)
 #===============================================#
 
-def dsp_menu(func_dict, menu_title):
+def dsp_menu(func_dict, menu_title, allow_kill=False):
     # displays menu items for user interaction
     global Configuration
     current_select = 1
 
+    # selection loop
     while True:
-        current_func_name, current_func = func_dict[current_select]
+        # get function address and name for current index
+        if current_select in func_dict:
+            current_func_name, current_func = func_dict[current_select]
+
+        else:
+            # this shouldn't occur in normal use, only if I forget to add index
+            if current_select != len(func_dict):
+                current_select += 1
+            else:
+                current_select = 1
+
+        # display menu status
         title = menu_title + ":"
         top_line = format_length(menu_title, 11) + format_length(str(current_select) + "/" + str(len(func_dict)),5, alignment="RIGHT")
         bottom_line = "=> " + format_length(current_func_name, 12)
         update_display(top_line, bottom_line)
-        choose = button_input(True)
 
+        # get user input for selection
+        choose = button_input(True)
         if choose == "cycle":
             if current_select != len(func_dict):
                 current_select += 1
@@ -297,7 +341,12 @@ def dsp_menu(func_dict, menu_title):
         elif choose == "select":
             current_func()
 
+        # check if need to exit for kill reasons
+        if allow_kill:
+            if sys_main_status() == "KILL":
+                break
 
+# General Functions
 def confirm(message):
     # asks user to confirm message before continuing
     top_line = format_length(message)
@@ -411,9 +460,6 @@ def hardware_button_input(allow_idle=False):
                 error("E905", "Exiting idle mode")
 
 
-
-
-
 def software_button_input():
     # Input detection for emulation
     new_com = input(": ")
@@ -437,7 +483,7 @@ def hardware_update_display(display_input):
         lcd.write_string(send_to_display)
         return 1
     else:
-        error("E203")
+        error("E203", "Hardware display update error")
 
 def software_update_display(display_input):
     # Driver code for display emulation
@@ -509,10 +555,12 @@ def display_format(top, bottom, default=True):
     # Formats top and bottom line, allowing for change in default
 
     if default is True:
+        # normal length format
         top_line = format_length(top)
         bottom_line = format_length(bottom)
 
     else:
+        # allow reduction through extreme methods
         new_len, new_vowel = default
         top_line = format_length(top, new_len, new_vowel)
         bottom_line = format_length(bottom, new_len, new_vowel)
@@ -520,13 +568,17 @@ def display_format(top, bottom, default=True):
     return top_line, bottom_line
 
 
-def wait_select():
+def wait_select(slowdown=False):
     # Waits for "select" confirmation
     while True:
         choose = button_input()
 
+
         if choose == "select":
             break
+
+        if slowdown:
+            sleep(1)
 
 def yesno(message):
     # Basic bool select function, returns bool value
@@ -626,13 +678,12 @@ def con_shutdown():
         configuration["go_reboot"] = False
         configuration["go_kill"] = True
 
-
 def con_about():
     # About the program - also used for idle screen
     top_line = "  PARKES v" + str(parkes_version) + "   "
-    bottom_line = format_length("   novae 2021   ")
+    bottom_line = format_length(" J.Woodman 2021 ")
     update_display(top_line, bottom_line)
-    wait_select()
+    wait_select(True)
 
 
 def con_cursor():
@@ -735,7 +786,13 @@ def check_vamp_tuple(vamp):
 
 def cne_open_port(user_conf=True):
     global parkes_radio
+    global configuration
     # Opens the default port for Parkes transceiver
+
+    # check that port isn't already open
+    if configuration["telemetry"]["port_open"]:
+        error("E314", "Error opening port - port already open!")
+        return
 
     parkes_radio = serial.Serial(
         port = "/dev/serial0",
@@ -747,6 +804,9 @@ def cne_open_port(user_conf=True):
         # You might need a timeout here if it doesn't work, try a timeout of 1 sec
         )
     error("E910", "opened port - parkes_radio")
+
+    configuration["telemetry"]["port_open"] = True  # Set port_open config flag
+
     if user_conf is True:
         confirm("PORT OPENED")
 
@@ -772,8 +832,6 @@ def cne_receive(override_timeout=False, timeout_set=5):
         to_return = to_return.decode()
         vamp_decom = []
         parkes_radio.timeout = None
-        print(to_return)
-        print(to_return.split("_"))
         for element in to_return.split("_"):
             vamp_decom.append(element[1:])
         try:
@@ -781,7 +839,8 @@ def cne_receive(override_timeout=False, timeout_set=5):
             vamp = (floor(float(v)), floor(float(a)), int(m), int(p))
             return to_return
         except:
-            print(vamp_decom)
+            print("Timeout detected - " + str(vamp_decom))
+            error("E313", "cne_receive() - Connection timeout")
             return "timeout"
 
     # Listens for a vamp from Vega. Simples
@@ -1023,12 +1082,14 @@ def dsp_hb_view(status):
 
 
 def cne_hb_view():
+    # show active heartbeat data
     if configuration["telemetry"]["hb_active"] == True:
         dsp_hb_view(True)
     else:
         dsp_hb_view(False)
 
 def cne_hb_kill():
+    # disable the heartbeat cleanly, if active
     if configuration["telemetry"]["hb_active"] == True:
         go_kill = yesno("KILL HRTBT?")
         if go_kill == True:
@@ -1038,6 +1099,7 @@ def cne_hb_kill():
         error("E250")
 
 def cne_hb_menu():
+    # hearbeat function menu
     global configuration
 
     hb_func_dict = {
@@ -1049,18 +1111,21 @@ def cne_hb_menu():
     # Exit to menu, don't write below here
 
 def cne_connect():
+    # runs the handshake protocol
     global configuration
     cne_open_port(False)
     cne_handshake()
     configuration["telemetry"]["connected"] = True
 
 def cne_vfs_beep():
+    # set the beep volume for Vega's buzzer
     new_val =str(num_select("SELECT VOLUME:", DEFAULT_NUMSEL))
     if new_val != "!":
         cne_vfs_updater("beep_vol", new_val)
         sleep(0.2)
 
 def cne_vfs_debug():
+    # switches between debug mode on Vega
     set_debug = yesno("SET DEBUG?")
     if set_debug:
         cne_vfs_updater("debug_mode", "True")
@@ -1081,12 +1146,14 @@ def cne_vfs_config():
 
 
 def cne_vfs_update():
+    # begins uploading the new update data to vega
     global configuration
     if yesno("UPDATE VFS?"):
         cne_upload_config(configuration["vfs_update_queue"])
         confirm("UPDATE COMPLETE")
 
 def cne_vfs_compiler():
+     # send and compile the vfs update
      cne_open_port(False)
      compile_vamp = (10000, 1000, 4, 00000)
      confirm("VFS LOG COMPILER")
@@ -1108,19 +1175,20 @@ def cne_vfs_menu():
     dsp_menu(vfs_config_dict, "VFS CONFIG")
     # Exit to menu, don't write below here
 
-def cne_update_cleanup():
-    os.system("rm " + update_folder)
+def cne_update_cleanup(update_folder):
+    os.system("rmdir " + update_folder)
 
 def cne_update():
     global configuration
 
     update_folder = "update_tool"
-    update_target = "/" + update_folder + "/parkes_master.py"
+    update_target = "/home/pi/" + update_folder + "/parkes_master.py"
     grab_command = "scp jackwoodman@corvette.local:/Users/jackwoodman/Desktop/novae/parkes_master.py /home/pi/" + update_folder
 
     top_line = format_length("PGS UPDATE TOOL")
     bottom_line = format_length("finding update..")
     update_display(top_line, bottom_line)
+    cne_update_cleanup(update_folder)
     # create temporary folder
     os.system("mkdir " + update_folder)
 
@@ -1140,6 +1208,7 @@ def cne_update():
         comparison = filecmp.cmp("parkes_master.py", update_target)
     except:
         error("E350", "PGS update comparison failed")
+        return
 
     # check if update is required or not
     if comparison:
@@ -1147,7 +1216,7 @@ def cne_update():
         bottom_line = "no updates!"
         error("E351", "no PGS updates found")
         wait_select()
-        cne_update_cleanup()
+        cne_update_cleanup(update_folder)
         return
 
     else:
@@ -1166,7 +1235,7 @@ def cne_update():
             error("E352", "update failed - could not update file")
             update_display(top_line, bottom_line)
             wait_select()
-            cne_update_cleanup()
+            cne_update_cleanup(update_folder)
             return
 
     # check the update has worked
@@ -1175,7 +1244,7 @@ def cne_update():
         error("E353", "update failed - update corruption detected")
         update_display(top_line, bottom_line)
         wait_select()
-        cne_update_cleanup()
+        cne_update_cleanup(update_folder)
         return
 
     bottom_line = "update success! "
@@ -1186,7 +1255,7 @@ def cne_update():
     update_display(top_line, bottom_line)
 
 
-    os.system("rm " + update_folder)
+    os.system("rmdir " + update_folder)
     sleep(4)
 
     bottom_line = "reboot to finish"
@@ -1206,7 +1275,8 @@ def sys_connect():
         2 : ["STATUS", cne_status],
         3 : ["HEARTBEAT", cne_hb_menu],
         4 : ["VFS CONFIG", cne_vfs_menu],
-        5 : ["PORT OPEN", cne_open_port]
+        5 : ["UPDATE PGS", cne_update],
+        6 : ["PORT OPEN", cne_open_port]
         }
 
     dsp_menu(connect_func_dict, "CONNECT")
@@ -1241,7 +1311,7 @@ def sys_config():
         10 : ["DEBUG", sys_debug]
         }
 
-    dsp_menu(config_func_dict, "CONFIG")
+    dsp_menu(config_func_dict, "CONFIG", True)
         # Exit to menu, don't write below here
     # Exit to menu, don't write below here
 
@@ -1251,7 +1321,8 @@ def sys_config():
 
 
 
-def lch_hotfire():
+
+def lch_parkes_fire():
     # Used for testing engines without the preflight tests
 
     sure_go = yesno("RUN HOTFIRE?")
@@ -1270,6 +1341,7 @@ def lch_hotfire():
 
 
     while hold:
+        # Loop to check for arming status
         update_display(top_line, bottom_line)
         if sys_check_arm():
             top_line = format_length("ARMED!")
@@ -1309,64 +1381,149 @@ def lch_hotfire():
         top_line, bottom_line =  display_format("    COUNTDOWN   ", "    ignition    ")
         sleep(10)
 
+
+def dsp_arm_status(missile="unknown", key="unknown"):
+    # display the current status of the arm inputs during fire idle
+    status = [" ","x","?"]
+
+    if missile == True:
+        missile_status = status[1]
+    elif missile == False:
+        missile_status = status[0]
+    else:
+        missile_status = status[2]
+
+    if key == True:
+        key_status = status[1]
+    elif key == False:
+        key_status = status[0]
+    else:
+        key_status = status[2]
+
+    top_line = " SAFETY | ARMED "
+    bottom_line = f"   [{missile_status}]  |  [{key_status}]  "
+    update_display(top_line, bottom_line)
+
+def dsp_countdown():
+    # entering countdown display
+    launch_decision = True
+
+    # display countdown in cute way
+    for count in range(11):
+        current = 10 - count
+        current_str = str(current).zfill(2)
+
+        loaded = ""
+        for i in range(count):
+            loaded += " "
+        for j in range(current):
+            loaded += "="
+        bottom_line = f"  [{loaded}]  "
+
+
+        top_line = f"     - {current_str} -     "
+        update_display(top_line, bottom_line)
+        sleep(0.95)
+
+        if not sys_check_status(GPIO_ARM) or not sys_check_status(GPIO_MISSILE):
+            # either arm keyswtich or missile disengaged, abort countdown
+            top_line, bottom_line =  display_format("DISARMED", "ending countdown")
+            update_display(top_line, bottom_line)
+            sleep(3)
+            sys_set_output(GPIO_LIGHT, False)
+            launch_decision = False
+            break
+
+    # left countdown loop, return ultimate decision
+    return launch_decision
+
+def dsp_arm_sequence(hold=True, armed=False):
+    global configuration
+    # arming and countdown sequences, returns ultimate arming status
+
+    if not armed:
+        # some programming error calling the function has occured
+        error("E289", "Serious error calling dsp_arm_sequence")
+        return False
+
+
+    while hold:
+        mis_status = sys_check_status(GPIO_MISSILE)
+        key_status = sys_check_status(GPIO_ARM)
+
+        dsp_arm_status(mis_status, key_status)  # show gui for arm stat
+
+        if sys_check_status(GPIO_ARM) and sys_check_status(GPIO_MISSILE):
+            # both arms triggered, ready for button press
+            armed = True
+
+        else:
+            armed = False
+
+        # ready to enter coutndown
+        if armed and sys_check_launch():
+            hold = False
+
+        elif not armed and sys_check_launch():
+            # allow to leave launch arm sequence
+            end_seq = confirm("END SEQUENCE?")
+            if end_seq:
+                return False
+
+        sys_set_output(GPIO_LIGHT, armed)
+        sleep(0.1)
+
+    top_line = format_length("  AUTOSEQUENCE  ")
+    bottom_line = format_length("     active     ")
+    update_display(top_line, bottom_line)
+    sleep(3.5)
+
+    return True
+
+
 def lch_epoch_fire():
+    # Function to manually fire epoch
     cne_open_port()
+
+    # get hotfire confirmation
     sure_go = yesno("HOTFIRE EPOCH?")
     if not sure_go:
         return
 
-    sleep(2)
+    else:
+        sleep(2)
+        hold, armed = True, False
 
-    top_line = format_length("DISARMED")
-    bottom_line = format_length("key to arm...")
-    hold, armed = True, False
-
-
-    while hold:
-        update_display(top_line, bottom_line)
-        if sys_check_arm() and sys_check_status(GPIO_MISSILE):
-            GPIO.output(GPIO_LIGHT, GPIO.HIGH)
-            top_line = format_length("ARMED!")
-            bottom_line = format_length("ready...")
-
-            armed = True
-        else:
-            GPIO.output(GPIO_LIGHT, GPIO.LOW)
-            top_line = format_length("DISARMED")
-            bottom_line = format_length("key to arm...")
-            armed = False
-
-        if armed and sys_check_launch():
-            hold = False
-        sleep(0.2)
-
-    top_line = format_length("AUTOSEQUENCE")
-    bottom_line = format_length("-----active-----")
-    update_display(top_line, bottom_line)
-
-    sleep(4)
-    # COUNTDOWN
-    continue_launch = True
-    for count in range(11):
-        current = str(10 - count).zfill(2)
-        top_line = format_length("    COUNTDOWN   ")
-        bottom_line = format_length("      |"+current+"|      ")
-        update_display(top_line, bottom_line)
-        sleep(0.95)
-        if not sys_check_arm():
-            top_line, bottom_line =  display_format("DISARMED", "ending countdown")
-            update_display(top_line, bottom_line)
-            sleep(3)
-            continue_launch = False
-            break
+    # enter arm and countdown phase
+    continue_launch = dsp_arm_sequence(hold, armed)
+    if continue_launch:
+        countdown_res = dsp_countdown()
 
     if continue_launch:
-        com_res = sys_epoch_fire(sys_check_arm(), True)
+        # if we're here, we're launching boys
 
-        if com_res == 1:
-            top_line, bottom_line =  display_format("EPOCH CONFIRM", "    ignition    ")
+        # check reply from epoch
+        mis_status = sys_check_status(GPIO_MISSILE)
+        key_status = sys_check_status(GPIO_ARM)
+        com_res = sys_epoch_fire(mis_status, key_status)
+
+        if com_res == 0:
+            # epoch not ok with the lauch
+            error("E261", "Epoch aborted ignition")
+
+        elif com_res == 1:
+            # got confirmation of the ignition
+            top_line, bottom_line =  display_format("    IGNITION    ","   confirmed    ")
             update_display(top_line, bottom_line)
             wait_select()
+
+        elif com_res == 2:
+            # connection to epoch timed out
+            error("E260", "Timeout - unable to connect to Epoch")
+
+    # end of hotfire, cleanup
+    sys_set_output(GPIO_LIGHT, False)
+
 
 
 
@@ -1382,7 +1539,8 @@ def lch_flight_configure():
     return True
 
 
-def lch_preflight():
+def lch_preflight_parkes():
+    global configuration
     # Parkes onboard checks
 
     # Check configured for flight
@@ -1400,7 +1558,7 @@ def lch_preflight():
 
     # Check UART port is open
     try:
-        if not parkes_radio.is_open():
+        if not configuration["telemetry"]["port_open"]:
             return "parkes_radio port is closed"
     except:
         return "parkes_radio port has not been initialised"
@@ -1470,20 +1628,39 @@ def lch_countdown():
         error("E999", "ignition")
         wait_select()
 
-def lch_launch_program():
-    sure_go = yesno("COMMIT LAUNCH?")
-    if not sure_go:
-        return
+def dsp_preflight_show():
+    global configuration
 
+    status = configuration["launch"]["preflight_status"]
+
+    top_line = format_length("PREFLIGHT CHECK:")
+    bottom_line = format_length(status)
+    update_display(top_line, bottom_line)
+    sleep(1.5)
+
+def lch_preflight_all():
+    global configuration
+    pass_count = 0
     # Ask for flight configuration and preflight checks
-    pf_results = lch_preflight()
+    configuration["launch"]["preflight_status"] = "parkes..."
+    dsp_preflight_show()
+    pf_results = lch_preflight_parkes()
+    sleep(1.5)
 
     if pf_results != True:
         error("E291", pf_results)
-        return
+        configuration["launch"]["in_preflight"] = False
+
+    else:
+        # parkes is good to go
+        configuration["launch"]["preflight_status"] = "parkes is GO"
+        dsp_preflight_show()
+        pass_count += 1
 
     if vega_in_loop:
         # Time to ask Vega to launch_poll
+        configuration["launch"]["preflight_status"] = "vega..."
+        dsp_preflight_show()
         v, a, m, p = "00000", "0000", "0", "00000"
         command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
         parkes_radio.write(command.encode())
@@ -1491,24 +1668,28 @@ def lch_launch_program():
         vega_confirmed = cne_vamp_destruct(cne_receive())
         if vega_confirmed[2] != 0:
             error("E294", str(vega_confirmed))
-            return
 
         sleep(0.4)
         vega_poll_results = cne_vamp_destruct(cne_receive())
 
         if vega_poll_results[3] == "21111":
             error("E292", str(vega_poll_results))
-            return
 
         elif vega_poll_results[3] == "20000":
             error("E990", "vega is configured for flight")
+            configuration["launch"]["preflight_status"] = "vega is GO"
+            dsp_preflight_show()
 
         else:
             error("E293", str(vega_poll_results))
-            return
+    else:
+        # no vega in loop, increment to override
+        pass_count += 1
 
 
     # Time to ask Epoch to launch_poll
+    configuration["launch"]["preflight_status"] = "epoch..."
+    dsp_preflight_show()
     v, a, m, p = "00000", "0000", "0", "10000"
     command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
     parkes_radio.write(command.encode())
@@ -1517,19 +1698,77 @@ def lch_launch_program():
 
     if vega_poll_results[3] == "11111":
         error("E298", str(vega_poll_results))
-        return
 
     elif vega_poll_results[3] == "20000":
         error("E990", "Epoch is configured for flight")
+        configuration["launch"]["preflight_status"] = "epoch is GO"
+        dsp_preflight_show()
+        pass_count += 1
 
     else:
         error("E296", str(epoch_poll_results))
+
+    # if three GO counts, return good to go
+    if pass_count == 3:
+        configuration["launch"]["preflight_status"] = "p:GO v:GO e:GO  "
+        dsp_preflight_show()
+        top_line = "   ALL SYSTEMS  "
+        bottom_line = "     ARE GO     "
+        update_display(top_line, bottom_line)
+        sleep(4)
+        return True
+
+    else:
+        return False
+
+def lch_launch_program():
+    # this is the big one
+    global configuration
+
+    sure_go = yesno("COMMIT LAUNCH?")
+    if not sure_go:
         return
+
+    # get gui confirmation to arm for launch
+    arm_sequence = dsp_arm_sequence()
+
+    if not arm_sequence:
+        return
+
+    # good to launch, set preflight flags
+    configuration["launch"]["in_preflight"] = True
+
+    passed_preflights = lch_preflight_all()
+
+    if not passed_preflights:
+        return
+
+    configuration["launch"]["in_preflight"] = False
 
     sleep(2)
     error("E998", "launch countdown commit")
 
-    lch_countdown()
+    # seek arm confirmation
+    continue_launch = dsp_countdown()
+
+    if continue_launch:
+        # finally ok to launch, send command to epoch
+        mis_status = sys_check_status(GPIO_MISSILE)
+        key_status = sys_check_status(GPIO_ARM)
+        com_res = sys_epoch_fire(mis_status, key_status)
+
+        if com_res == 0:
+            # epoch not ok with the lauch
+            error("E261", "Epoch aborted ignition")
+
+        elif com_res == 1:
+            # got confirmation of the ignition, enter downlink
+            dsp_downlink()
+
+        elif com_res == 2:
+            # connection to epoch timed out
+            error("E260", "Timeout - unable to connect to Epoch")
+
 
 def lch_force_launch():
     # Forces launch, skipping prep and arm phase. Used for testing only. May be removed from use
@@ -1541,9 +1780,9 @@ def lch_force_launch():
     # Loop to send handshake / await response
     cne_send(force_vamp)
     sleep(0.2)
-    lch_downlink()
+    dsp_downlink()
 
-def lch_loop():
+def lch_vega_demo():
     # Forces launch, skipping prep and arm phase. Used for testing only. May be removed from use
     cne_open_port(False)
     error("E210")
@@ -1553,7 +1792,7 @@ def lch_loop():
     # Loop to send handshake / await response
     cne_send(force_vamp)
     sleep(0.2)
-    lch_downlink()
+    dsp_downlink(True)
 
 def lch_arm():
     # arms vega for flight
@@ -1562,8 +1801,9 @@ def lch_arm():
     # Loop to send handshake / await response
     cne_send(arm_vamp)
 
-def lch_downlink():
+def dsp_downlink(demo=False):
     flight_downlink = []
+    downlinking = True
     modetype = {
         0 : " VEGA IDLE      ",
         1 : " ARMED & READY  ",
@@ -1574,8 +1814,10 @@ def lch_downlink():
         6 : " LANDED & SAFE  ",
         7 : " ERROR / UNKNWN "
         }
+
+    exit_triggers = [6, 7]
     # Designed as a lightweight function to display data directly
-    while True:
+    while downlinking:
         incoming = parkes_radio.read_until()
         try:
             v,a,m,p = cne_vamp_destruct(incoming.decode())
@@ -1584,17 +1826,31 @@ def lch_downlink():
         except:
             error("E311", incoming.decode())
 
+        if not demo:
+            # not in demo mode, check for triggers to leave downlink
+            if m in exit_triggers:
+                error_code = "E99" + str(m)
+                error(error_code)
+                downlinking = False
+
+    # finished with flight, go to postflight
+    lch_landed()
+
+def lch_landed():
+    # function to handle all postflight stuff
+    currently = "unused"
+
 
 def sys_launch():
 
     launch_func_dict = {
-        1 : ["AUTOSEQUENCE", lch_launch_program],
-        2 : ["ARM VEGA", lch_arm],
-        3 : ["LAUNCH", lch_force_launch],
-        4 : ["HOTFIRE", lch_hotfire],
-        5 : ["DOWNLINK", lch_downlink],
-        6 : ["LCH LOOP", lch_loop],
-        7 : ["EPOCH FIRE", lch_epoch_fire]
+        1 : ["AUTOSEQUENCE", lch_launch_program],   # main launch program
+        2 : ["ARM VEGA", lch_arm],                  # arm vega for flight
+        3 : ["VEGA DOWNLNK", lch_force_launch],     # vega downlink mode
+        4 : ["PRKS DOWNLNK", dsp_downlink],         # parkes downlink mode
+        5 : ["EPOCH FIRE", lch_epoch_fire],         # commands epoch ignition
+        6 : ["PARKES FIRE", lch_parkes_fire]        # commands parkes ignition
+        7 : ["VEGA DEMO", lch_vega_demo]            # vega demo downlink
         }
 
     current_select = 1
@@ -1611,9 +1867,10 @@ def sys_main_menu():
         1 : ["CONFIG", sys_config],
         2 : ["CONNECT", sys_connect],
         3 : ["LAUNCH", sys_launch]
-        }
+    }
+
     while True:
-        if configuration["go_reboot"] or configuration["go_kill"]:
+        if sys_main_status() != "CONTINUE":
             error("E399", "go_kill / go_reboot detected")
             return
         else:
@@ -1621,12 +1878,17 @@ def sys_main_menu():
 
 def sys_shutdown_process():
     # Function to handle all the pre-shutdown cleanup
-
     sleep(1)
     top_line, bottom_line = "PARKES v" + str(parkes_version) + "     ", format_length("shutting down", DEFAULTLEN)
     update_display(top_line, bottom_line)
     error("E900", "Shutdown process initiated")
     sleep(4)
+
+    # Non-system shutdown stuff here
+
+
+
+
 
     top_line, bottom_line = format_length(" ", DEFAULTLEN), format_length(" done", DEFAULTLEN)
     error("E901", "Shutdown process complete")
@@ -1635,6 +1897,7 @@ def sys_shutdown_process():
 
 def sys_type_get(newval):
     # Get variable type, return string output
+    # this feels like there are better ways to write this
     try:
         int(newval)
         return "int"
@@ -1653,15 +1916,19 @@ def sys_type_get(newval):
 def sys_startup_tests(ex_value, config_vals):
     # Startup test functions, don't fuck with these
 
+    # check number of config values matches expectations
     if len(config_vals) != ex_value:
         return False, "c_v_failure"
 
+    # checks config file version supports parkes version
     if parkes_version > configuration["parkes_vers"]:
         return False, "c_f_failure"
 
+    # check parkes version supports config file
     if parkes_version < configuration["parkes_vers"]:
         return False, "p_v_failure"
 
+    # passed all checks
     return True, "tests_passed"
 
 # Parkes Configuration Interpreter 2.0 - PCI2.0c
@@ -1702,6 +1969,23 @@ def cfg_homedir(data):
 
     configuration["home_dir"] = home_dir
 
+def cfg_launch(data):
+    # launch program config functions
+    global configuration
+
+    if data == "init":
+        configuraiton["launch"] = {}
+
+    elif set in data:
+        if "default" in data:
+            configuration["launch"] = {
+                            "in_preflight"     : False,
+                            "preflight_status" : "Inactive",
+
+            }
+
+        # TO DO - add non default support
+
 def cfg_telemetry(data):
     # telem configuration functions
     global configuration
@@ -1711,7 +1995,17 @@ def cfg_telemetry(data):
 
     elif "set" in data:
         if "default" in data:
-            configuration["telemetry"] = {"active": False, "connected": False, "sig_strength": 0, "hb_active": False, "hb_data":[], "hb_sigstrn":0, "hb_force_kill": False}
+            configuration["telemetry"] = {
+                            "active": False,
+                            "connected": False,
+                            "sig_strength": 0,
+                            "port_open": False,
+                            "hb_active": False,
+                            "hb_data":[],
+                            "hb_sigstrn":0,
+                            "hb_force_kill": False
+                            }
+        # TO DO - add non default support
 
 def cfg_errlog(data):
     # error log configuration functions
@@ -1742,7 +2036,8 @@ def cfg_run_command(target, command):
         "home_dir" : cfg_homedir,
         "telemetry": cfg_telemetry,
         "error_log": cfg_errlog,
-        "expected_value": cfg_exval
+        "expected_value": cfg_exval,
+        "launch" : cfg_launch
     }
 
     command_funcs[target](command)
@@ -1755,6 +2050,7 @@ def cfg_startuptest_modify(set_to=False):
         error("E202")
 
 def cfg_include_vega():
+    # includes vega in pre-launch checks
     global vega_in_loop
     vega_in_loop = True
 
@@ -1961,12 +2257,15 @@ def bug_hardware_diag():
     confirm("DIAG COMPLETE")
 
 # Main running loop
-while configuration["go_reboot"] and not configuration["go_kill"]:
+while sys_main_status() == "REBOOT":
     global run_startup_test
     global exptected_value
     global vega_in_loop
 
+    # set default config values
     run_startup_test, expected_value, configuration["go_reboot"], vega_in_loop = True, 0, False, False
+
+    # find config file
     config_file = open("/home/pi/parkes_config.txt", "r")
 
     # run startup functions and setup processes
@@ -1985,9 +2284,17 @@ while configuration["go_reboot"] and not configuration["go_kill"]:
     sys_main_menu()
 
 
+
+
 # If we're here, we've left the running loop. Time to clean up.
+
+# Non-system shutdown stuff
 sys_shutdown_process()
+
+# System shutdown stuff
 lcd.clear()
+GPIO.cleanup()
+parkes_radio.close()
 
 # clean shutdown, disconnects SSH and prevents SD corruption
 from subprocess import call
