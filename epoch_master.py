@@ -2,7 +2,7 @@
 '''
     ==========================================================
     Epoch Launch Software, version 0.1
-    Copyright (C) 2020 Jack Woodman - All Rights Reserved
+    Copyright (C) 2021 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
     * terms of the GNU GPLv3 license.
@@ -13,6 +13,7 @@
     ==========================================================
 '''
 
+import os
 import time
 import math
 import serial
@@ -21,7 +22,8 @@ from time import sleep
 
 # Variables
 epoch_version = 0.1
-comp_id = 1
+internal_version = "0.1.2"
+
 receiving_command = True
 ready_fire = False
 
@@ -32,6 +34,7 @@ error_log, flight_log = [], []
 
 # Constants
 IGNITION_DELAY = 5
+COMP_ID = 1
 
 # GPIO setup
 ignitor_x = 11
@@ -98,6 +101,7 @@ def flight_log_unload(flight_log, done=True):
 
 def flight_logger(event, time):
     global flight_log
+    print(event)
     new_log = (event, time)
 
     flight_log.append(new_log)
@@ -107,7 +111,7 @@ def open_port():
     global epoch_radio
     # Opens the default port for Vega transceiver
     epoch_radio = serial.Serial(
-        port = "/dev/serial0",
+        port = "/dev/ttyS0",
         baudrate = 9600,
         parity = serial.PARITY_NONE,
         stopbits = serial.STOPBITS_ONE,
@@ -130,6 +134,8 @@ def receive():
     data = epoch_radio.read_until()
     to_return = data
     to_return = to_return.decode()
+    print(to_return)
+
     return to_return
 
 
@@ -141,8 +147,9 @@ def vamp_destruct(vamp):
     try:
         v, a, m, p = vamp_decom
     except:
-        error("E120")
+        print("E120")
     vamp = (int(v), int(a), int(m), int(p))
+    return vamp
 
 """==== EPOCH FUNCTIONS ===="""
 def echo():
@@ -194,13 +201,13 @@ def command_ignition():
     # Upon receiving command from Parkes, approve Epoch to fire.
     flight_logger("command_ignition - active", duration())
     sleep(1)
+    open_port()
+    sleep(1)
 
     # confirm with parkes that launch is imminent
     v, a, m, p = "00000", "0000", "9", "20000"
     command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
     epoch_radio.write(command.encode())
-
-
 
 
     flight_logger("commanding all_fire", duration())
@@ -307,7 +314,7 @@ init_time = time.time()
 flight_logger("epoch launch software - startup", duration())
 flight_logger("initialising pls - verison: " + str(epoch_version), duration())
 # Initialise epoch_radio
-#open_port() DEBUG
+open_port()
 time.sleep(1)
 flight_logger("port open", duration())
 
@@ -322,39 +329,28 @@ command_dict = {
 }
 
 
-command_list = {0:"echo", 1:"command_ignition", 2:"test_fire", 3:"test_single", 4:"startup", 5:"command_fire"}
-while True:
 
-    for command in command_list:
-        print(" - " + str(command) + " : " + str(command_list[command]))
-    print(" ")
-    inp = int(input("Select command: "))
-
-    if inp in command_list:
-        command_dict[inp]()
-    print(" ")
-    time.sleep(1)
-
-test = """while receiving_command:
+while receiving_command:
     flight_logger("RECEIVING COMMAND...", duration())
-
+    sleep(1)
     new_command = vamp_destruct(receive())
     flight_logger("COMMAND: " + str(new_command), duration())
 
     target_program = new_command[2]
-    target_comp = new_command[3][0]
+
+    target_comp = int(str(new_command[3])[0])
     if __name__ == "__main__":
         try:
             # Check epoch is the intended target for command
-            if target_comp == comp_id:
+            if target_comp == COMP_ID:
 
                 command_dict[target_program]()
         except KeyboardInterrupt:
             flight_logger("KeyboardInterrupt detected", duration())
             flight_logger("port closed", duration())
-            compile_logs()"""
+            compile_logs()
 
 
 
 
-      # do noth 
+      # do noth
