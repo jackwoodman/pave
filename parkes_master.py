@@ -1,5 +1,5 @@
 # pgs
-# internal verion 0.5.12
+# internal verion 0.5.14
 
 '''
     ==========================================================
@@ -31,7 +31,7 @@ hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = False
 parkes_version = 0.5
-internal_version = "0.5.12"
+internal_version = "0.5.14"
 
 
 # Constants
@@ -60,7 +60,8 @@ configuration = {
     # super important configuration dictionary that has become severely bloated
     "go_reboot": True,
     "go_kill": False,
-    "vfs_update_queue": []
+    "vfs_update_queue": [],
+    "internal_vers" : internal_version
     }
 
 
@@ -121,24 +122,20 @@ def sys_check_status(gpio_pin):
     else:
         return False
 
-
-def sys_check_arm():
-    if GPIO.input(GPIO_ARM) == GPIO.LOW:
-        return True
-    else:
-        return False
-
 def sys_check_launch():
+    # soon to be deprecated - don't use this for anything
     if GPIO.input(GPIO_LAUNCH) == GPIO.LOW:
         return True
     else:
         return False
 
 def sys_check_cont():
-    # Not-yet-implemeneted function to check for continuity in launchpad
-    # will likely be removed as from pre-Epoch ignition system
-    # still here because backwards compat
-    return True
+    # originally from the days where parkes controlled ignition instead of
+    # epoch. keeping here incase I work out how to do continuity check
+    # with epoch - don't remove, as preflight checks poll this func
+    continuity = True
+
+    return continuity
 
 def sys_fire(arm, ignition):
     # Local ignition command, only for single engine fire
@@ -419,7 +416,7 @@ def update_display(top_line, bottom_line):
             return 1
 
     elif not hot_run:
-        print()
+        print("")
         print(" ________________")
         print("|" + str(top_line) + "|")
         print("|" + format_length(str(bottom_line), DEFAULTLEN) + "|")
@@ -1329,10 +1326,8 @@ def lch_parkes_fire():
     if not sure_go:
         return
     error("E290")
-    top_line = format_length("HOTFIRE ACTIVE")
-    bottom_line = "   |CONTINUE|   "
-    update_display(top_line, bottom_line)
-    wait_select()
+
+    confirm("HOTFIRE ACTIVE")
     sleep(2)
 
     top_line = format_length("DISARMED")
@@ -1343,7 +1338,7 @@ def lch_parkes_fire():
     while hold:
         # Loop to check for arming status
         update_display(top_line, bottom_line)
-        if sys_check_arm():
+        if sys_check_status(GPIO_ARM):
             top_line = format_length("ARMED!")
             bottom_line = format_length("ready...")
             armed = True
@@ -1369,7 +1364,7 @@ def lch_parkes_fire():
         bottom_line = format_length("      |"+current+"|      ")
         update_display(top_line, bottom_line)
         sleep(0.95)
-        if not sys_check_arm():
+        if not sys_check_status(GPIO_ARM):
             top_line, bottom_line =  display_format("DISARMED", "ending countdown")
             update_display(top_line, bottom_line)
             sleep(3)
@@ -1377,7 +1372,7 @@ def lch_parkes_fire():
             break
 
     if continue_launch:
-        sys_fire(sys_check_arm(), True)
+        sys_fire(sys_check_status(GPIO_ARM), True)
         top_line, bottom_line =  display_format("    COUNTDOWN   ", "    ignition    ")
         sleep(10)
 
@@ -1406,7 +1401,7 @@ def dsp_arm_status(missile="unknown", key="unknown"):
 
 def dsp_countdown():
     # entering countdown display
-    launch_decision = True
+    launch_decision = "GO"
 
     # display countdown in cute way
     for count in range(11):
@@ -1428,10 +1423,11 @@ def dsp_countdown():
         if not sys_check_status(GPIO_ARM) or not sys_check_status(GPIO_MISSILE):
             # either arm keyswtich or missile disengaged, abort countdown
             top_line, bottom_line =  display_format("DISARMED", "ending countdown")
+            error("E989", "Countdown ABORT")
             update_display(top_line, bottom_line)
             sleep(3)
             sys_set_output(GPIO_LIGHT, False)
-            launch_decision = False
+            launch_decision = "ABORT"
             break
 
     # left countdown loop, return ultimate decision
@@ -1492,7 +1488,7 @@ def lch_epoch_fire():
 
     else:
         sleep(2)
-        hold, armed = True, False
+        hold, armed = True, True
 
     # enter arm and countdown phase
     continue_launch = dsp_arm_sequence(hold, armed)
@@ -1548,7 +1544,7 @@ def lch_preflight_parkes():
         return "lch_flight_configure() failed"
 
     # Check system armed
-    if not sys_check_arm():
+    if not sys_check_status(GPIO_ARM):
         return True
         #return "disarm detected"
 
@@ -1568,13 +1564,10 @@ def lch_preflight_parkes():
         return "heartbeat is active"
 
     # Check system armed
-    if not sys_check_arm():
+    if not sys_check_status(GPIO_ARM):
         return True
         #return "disarm detected"
 
-    # Check ignition pin is LOW
-    if not GPIO.input(GPIO_IGNITOR):
-        return "ignition pin was not pulled low"
 
     return True
 
@@ -1587,7 +1580,7 @@ def lch_quick_check():
         return "discontinuity in ignition loop detected"
 
     # Check system armed
-    if not sys_check_arm():
+    if not sys_check_status(GPIO_ARM):
         return "disarm detected"
 
     return True
@@ -1621,7 +1614,7 @@ def lch_countdown():
 
     if continue_launch:
         # Passed launch checks, proceed with ignition command
-        sys_fire(sys_check_arm(), True)
+        sys_fire(sys_check_status(GPIO_ARM), True)
 
         top_line = format_length("    COUNTDOWN   ")
         bottom_line = format_length("    ignition    ")
@@ -1640,7 +1633,9 @@ def dsp_preflight_show():
 
 def lch_preflight_all():
     global configuration
-    pass_count = 0
+    v_count, e_count, p_count = 0,0,0
+    continue_poll = True
+    error("994", "Entering preflight checks")
     # Ask for flight configuration and preflight checks
     configuration["launch"]["preflight_status"] = "parkes..."
     dsp_preflight_show()
@@ -1653,9 +1648,10 @@ def lch_preflight_all():
 
     else:
         # parkes is good to go
+        error("E991", "Parkes is GO")
         configuration["launch"]["preflight_status"] = "parkes is GO"
         dsp_preflight_show()
-        pass_count += 1
+        p_count += 1
 
     if vega_in_loop:
         # Time to ask Vega to launch_poll
@@ -1665,26 +1661,34 @@ def lch_preflight_all():
         command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
         parkes_radio.write(command.encode())
 
-        vega_confirmed = cne_vamp_destruct(cne_receive())
+        vega_confirmed = cne_vamp_destruct(cne_receive(override_timeout=True))
         if vega_confirmed[2] != 0:
+            # did not get proper confirmation from vega
             error("E294", str(vega_confirmed))
+            continue_poll = False
 
-        sleep(0.4)
-        vega_poll_results = cne_vamp_destruct(cne_receive())
+        sleep(0.2)
 
-        if vega_poll_results[3] == "21111":
-            error("E292", str(vega_poll_results))
+        # check if worth continuing anyway
+        if continue_poll:
+            vega_poll_results = cne_vamp_destruct(cne_receive(override_timeout=True))
 
-        elif vega_poll_results[3] == "20000":
-            error("E990", "vega is configured for flight")
-            configuration["launch"]["preflight_status"] = "vega is GO"
-            dsp_preflight_show()
+            if vega_poll_results[3] == 21111:
+                error("E292", str(vega_poll_results))
 
-        else:
-            error("E293", str(vega_poll_results))
+
+            elif vega_poll_results[3] == 20000:
+                error("E990", "Vega is GO")
+                configuration["launch"]["preflight_status"] = "vega is GO"
+                dsp_preflight_show()
+                v_count += 1
+
+            else:
+                print(vega_poll_results[3])
+                error("E293", str(vega_poll_results))
     else:
         # no vega in loop, increment to override
-        pass_count += 1
+        v_count += 1
 
 
     # Time to ask Epoch to launch_poll
@@ -1696,30 +1700,53 @@ def lch_preflight_all():
 
     epoch_poll_results = cne_vamp_destruct(cne_receive())
 
-    if vega_poll_results[3] == "11111":
+    if epoch_poll_results[3] == 11111:
         error("E298", str(vega_poll_results))
 
-    elif vega_poll_results[3] == "20000":
-        error("E990", "Epoch is configured for flight")
+    elif epoch_poll_results[3] == 20000:
+        error("E993", "Epoch is GO")
         configuration["launch"]["preflight_status"] = "epoch is GO"
         dsp_preflight_show()
-        pass_count += 1
+        e_count += 1
 
     else:
+        print(epoch_poll_results[3])
         error("E296", str(epoch_poll_results))
+
+    # calculate go counts and set final preflight status
+    pass_count = v_count + e_count + p_count
+    pf_stat = lch_status_compile(v_count, e_count, p_count)
+    configuration["launch"]["preflight_status"] = pf_stat
 
     # if three GO counts, return good to go
     if pass_count == 3:
-        configuration["launch"]["preflight_status"] = "p:GO v:GO e:GO  "
         dsp_preflight_show()
+        sleep(1)
         top_line = "   ALL SYSTEMS  "
         bottom_line = "     ARE GO     "
         update_display(top_line, bottom_line)
         sleep(4)
         return True
 
+    elif pass_count > 3:
+        # oh no do something TODO
+        error("UNKNOWN")
     else:
+        # not enough GO counts, returning abort
+        dsp_preflight_show()
+        wait_select()
         return False
+
+def lch_status_compile(v,e,p):
+    # build display status for go/no go poll
+    state = {
+        0 : "NO",
+        1 : "GO"
+    }
+    status = "p:"+state[p]+" v:"+state[v]+" e:"+state[e]+"  "
+
+    return status
+
 
 def lch_launch_program():
     # this is the big one
@@ -1729,10 +1756,15 @@ def lch_launch_program():
     if not sure_go:
         return
 
+    error("E987", "Launch commit marked")
+
     # get gui confirmation to arm for launch
-    arm_sequence = dsp_arm_sequence()
+    cne_open_port()
+    arm_sequence = dsp_arm_sequence(True,True)
+    error("E988", "entering autosequence...")
 
     if not arm_sequence:
+        sys_set_output(GPIO_LIGHT, False)
         return
 
     # good to launch, set preflight flags
@@ -1741,6 +1773,7 @@ def lch_launch_program():
     passed_preflights = lch_preflight_all()
 
     if not passed_preflights:
+        sys_set_output(GPIO_LIGHT, False)
         return
 
     configuration["launch"]["in_preflight"] = False
@@ -1751,7 +1784,7 @@ def lch_launch_program():
     # seek arm confirmation
     continue_launch = dsp_countdown()
 
-    if continue_launch:
+    if continue_launch == "GO":
         # finally ok to launch, send command to epoch
         mis_status = sys_check_status(GPIO_MISSILE)
         key_status = sys_check_status(GPIO_ARM)
@@ -1760,14 +1793,20 @@ def lch_launch_program():
         if com_res == 0:
             # epoch not ok with the lauch
             error("E261", "Epoch aborted ignition")
+            sys_set_output(GPIO_LIGHT, False)
 
         elif com_res == 1:
             # got confirmation of the ignition, enter downlink
+            error("E995", "Ignition confirmed, entering downlink mode")
             dsp_downlink()
 
         elif com_res == 2:
             # connection to epoch timed out
             error("E260", "Timeout - unable to connect to Epoch")
+            sys_set_output(GPIO_LIGHT, False)
+    else:
+        error("E943", continue_launch)
+        sys_set_output(GPIO_LIGHT, False)
 
 
 def lch_force_launch():
@@ -1849,7 +1888,7 @@ def sys_launch():
         3 : ["VEGA DOWNLNK", lch_force_launch],     # vega downlink mode
         4 : ["PRKS DOWNLNK", dsp_downlink],         # parkes downlink mode
         5 : ["EPOCH FIRE", lch_epoch_fire],         # commands epoch ignition
-        6 : ["PARKES FIRE", lch_parkes_fire]        # commands parkes ignition
+        6 : ["PARKES FIRE", lch_parkes_fire],       # commands parkes ignition
         7 : ["VEGA DEMO", lch_vega_demo]            # vega demo downlink
         }
 
@@ -1974,17 +2013,17 @@ def cfg_launch(data):
     global configuration
 
     if data == "init":
-        configuraiton["launch"] = {}
+        configuration["launch"] = {}
 
-    elif set in data:
+    elif "set" in data:
         if "default" in data:
             configuration["launch"] = {
                             "in_preflight"     : False,
-                            "preflight_status" : "Inactive",
+                            "preflight_status" : "Inactive"
 
             }
 
-        # TO DO - add non default support
+        # TO-DO - add non default support
 
 def cfg_telemetry(data):
     # telem configuration functions
@@ -2005,7 +2044,7 @@ def cfg_telemetry(data):
                             "hb_sigstrn":0,
                             "hb_force_kill": False
                             }
-        # TO DO - add non default support
+        # TO-DO - add non default support
 
 def cfg_errlog(data):
     # error log configuration functions
@@ -2162,7 +2201,10 @@ def bug_hardware_inp(input_name, input_pin):
                 # start of new unique input press, begin timer
                 bottomline = display_on
                 start_time = time.time()
+                # saturday
                 update_display(topline, bottomline)
+                #saturday
+
                 has_changed = True
 
             if (time.time() - start_time) > hold_time:
