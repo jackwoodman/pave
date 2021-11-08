@@ -1,7 +1,8 @@
 Parkes Configuration File
 ~ Jack Woodman, 2021
-[!] denotes a config value line
+[! ] denotes a config value line
 [$] denotes a runtime command
+
 
 
 Current count is 9
@@ -10,9 +11,9 @@ Current count is 9
 ! beep_volume=5
 ! go_reboot=True
 ! go_kill=False
-! test_value=letsgo
 ! connected=False
 ! con_type="None"
+! parkes_ignitor=False
 ! armed=False
 ! parkes_vers=0.5
 
@@ -20,12 +21,12 @@ $home_dir.set=/home/pi/
 $error_log.clear
 $error_log.init
 $expected_value.init
-$expected_value.set=9
+$expected_value.set=10
 $telemetry.init
 $telemetry.set=default
 $launch.init
 $launch.set=default
 $ignore_startup_tests
-$expect_vega
+// $expect_vega
 $end_setup
 
