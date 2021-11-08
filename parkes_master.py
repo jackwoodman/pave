@@ -1,5 +1,7 @@
 # pgs
-# internal verion 0.5.14
+# internal verion 0.5.2
+
+# requires parkes_edecode.py (1.2 and up)
 
 '''
     ==========================================================
@@ -23,6 +25,7 @@ from time import sleep
 from random import randint
 from datetime import datetime
 from RPLCD import CharLCD
+from parkes_edecode import error_decoder
 
 
 # hot_run defines whether Parkes will run using hardware or simulation.
@@ -31,7 +34,7 @@ hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = False
 parkes_version = 0.5
-internal_version = "0.5.14"
+internal_version = "0.5.2"
 
 
 # Constants
@@ -144,6 +147,40 @@ def sys_fire(arm, ignition):
         sleep(5)
         GPIO.output(GPIO_IGNITOR, GPIO.LOW)
 
+
+def sys_epoch_test(arm, ignition, amount):
+    print("firing...")
+
+    # commands epoch to fire
+    if arm and ignition:
+        # fire command
+        if amount == "single":
+            p = "30000"
+        elif amount == "all":
+            p = "20000"
+        v, a, m = "00000", "0000", "1"
+        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+        parkes_radio.write(command.encode())
+
+
+        # get confirmation
+        new_command = cne_receive(override_timeout=True, timeout_set=5)
+
+        if str(new_command) == "timeout":
+            return 2
+
+        final_command = cne_vamp_destruct(new_command)
+
+        target_program = final_command[2]
+        target_comp = int(str(final_command[3])[0])
+
+        if target_comp == COMP_ID and target_program == 9:
+            return 1
+        else:
+            # epoch isn't ok to fire for whatever reason
+            # TO-DO: sort reason from reason
+            return 0
+
 def sys_epoch_fire(arm, ignition):
     print("firing...")
 
@@ -191,6 +228,30 @@ def sys_file_init(target_file, title, id="unavailable"):
     new_file.write(bottom_line)
     new_file.write("")
     new_file.close()
+
+def dsp_scroll_tool(top_text, bottom_text):
+    # allows to scroll through bottom text on display
+    bottom_text += "  "
+    current_position = -1
+
+    while (True):
+        last_input = button_input()
+
+        if (last_input == "cycle" or last_input == "select"):
+            if (current_position >= len(bottom_text) - 1):
+                current_position = 0
+            else:
+                if (last_input == "cycle"):
+                    current_position += 2
+                elif (last_input == "select"):
+                    current_position += 1
+
+            top_line = top_text +str(current_position+1)+"/"+str(len(bottom_text)-2)
+            bottom_line = bottom_text[current_position:] + bottom_text[:current_position]
+            update_display(top_line, bottom_line)
+        elif (last_input == "back"):
+            break
+
 
 
 def dsp_vowel_remover(word):
@@ -263,7 +324,7 @@ def dsp_error_passive(code):
 def dsp_error_sysmess(code):
     sysmess = code
 
-def error(e_code, data=None):
+def error(e_code, data=True, add_data=False):
     # Parkes Error Handler 2.0 - PEH2.0
     # Full support for Parkes v.5 and upwards, with backwards compatability
     # for all versions of Parkes that support PEH1.X
@@ -276,18 +337,30 @@ def error(e_code, data=None):
         "9" : (dsp_error_sysmess, "System Message")
     }
 
-    error_type = error_codes[e_code[1]][0]
+    try:
+        error_type = error_codes[e_code[1]][0]
+    except:
+        # ecode isn't correct, input must have been wrong
+        error("E199", data=e_code, add_data=True)
 
     # Error display
     if e_code[1] in error_codes.keys():
         # If error code is correct
+        code = e_code[1]
 
-        new_error = "- " + error_codes[e_code[1]][1] + " ("+str(e_code)+")"
+        new_error = "- " + error_codes[code][1] + " ("+str(e_code)+")"
 
-        if data:
+        if (data):
             # if data exists, add to log
             new_error += " => "
-            new_error += str(data)
+            error_def = error_decoder(e_code[1:])
+            new_error += str(error_def)
+
+            # request to add the data param to the error readout
+            if (add_data == True):
+                new_error += " => " + str(data)
+
+
 
         # display error in consol and add to errorlog
         print(new_error)
@@ -298,7 +371,7 @@ def error(e_code, data=None):
 
     else:
         # error code is incorrect
-        error("E199", e_code)
+        error("E199", data=e_code, add_data=True)
 #===============================================#
 
 def dsp_menu(func_dict, menu_title, allow_kill=False):
@@ -402,10 +475,10 @@ def button_input(allow_idle=False):
 
 
 
-def update_display(top_line, bottom_line):
+def update_display(top_line, bottom_line, force_hotrun=False):
     # Function takes input for 16x2 screen and displays either on hardware or software
 
-    if hot_run:
+    if hot_run or force_hotrun:
         if len(top_line) <= DEFAULTLEN and len(bottom_line) <= DEFAULTLEN:
             send_to_display = format_length(top_line) + format_length(bottom_line)
             lcd.write_string(send_to_display)
@@ -416,6 +489,7 @@ def update_display(top_line, bottom_line):
             return 1
 
     elif not hot_run:
+        update_display(format_length("-|   HOTRUN   |-"), format_length("-|  DISABLED  |-"), force_hotrun=True)
         print("")
         print(" ________________")
         print("|" + str(top_line) + "|")
@@ -492,7 +566,7 @@ def software_update_display(display_input):
     print("|________________|\n")
 
 
-def num_select(message, values, cur_val=1):
+def num_select(message, values, default_val=1):
     # Basic number selection UI, returns integer value AS STRING
     template, top_line = copy.copy(values), message
     current_num, builder, original = template[0], [template[0]], template
@@ -508,7 +582,7 @@ def num_select(message, values, cur_val=1):
 
         # If first loop, start at the current value
         if not has_run:
-            while builder[0] != cur_val:
+            while builder[0] != default_val:
                 original.append(original.pop(0))
                 builder = [original[0]]
             has_run = True
@@ -612,7 +686,7 @@ def sys_startup_animation():
     count = 0
 
     for i in range(11):
-        time_del = float((randint(1, 3)) / 10)
+        time_del = float((randint(1, 2)) / 10)
         filler = ""
         for i in range(count):
             filler += "="
@@ -620,23 +694,25 @@ def sys_startup_animation():
             filler += " "
         start_string = "  |" + filler + "|  "
 
-        update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN), start_string)
+        update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN), start_string, force_hotrun=True)
         count += 1
         sleep(time_del)
 
 
 def sys_startup():
+    global hot_run
     # Everything in here is done as part of the loading screen
     GPIO.output(GPIO_LIGHT, GPIO.HIGH)
     error("E903", "PARKES WAKEUP")
     error("E904", "Startup initiated")
 
     sleep(1)
-    update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN),  format_length("loading", DEFAULTLEN))
+    update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN),  format_length("loading", DEFAULTLEN), force_hotrun=True)
     sleep(0.4)
 
     # Assign ID number
     configuration["parkes_id"] = cfg_id_gen()
+
 
 
     sys_startup_animation()
@@ -645,17 +721,18 @@ def sys_startup():
     GPIO.output(GPIO_LIGHT, GPIO.LOW)
     error("E905", "Startup complete")
 
-def con_delay():
+def stg_delay():
     # Config: set delay for button input recog
     global configuration
-    new_val = "0." + str(num_select("SELECT DURATION:", DEFAULT_NUMSEL))
+    current_delay = configuration["rep_delay"]
+    new_val = "0." + str(num_select("SELECT DURATION:", DEFAULT_NUMSEL, current_delay))
     if new_val != "0.!":
         configuration["rep_delay"] = float(new_val)
 
-def con_beep():
+def stg_beep():
     # Config: set volume for beeper
     global configuration
-    new_val = str(num_select("SELECT VOLUME:", DEFAULT_NUMSEL))
+    new_val = str(num_select("SELECT VOLUME:", DEFAULT_NUMSEL, configuration["beep_volume"]))
     if new_val != "!":
         configuration["beep_volume"] = int(new_val)
 
@@ -683,14 +760,14 @@ def con_about():
     wait_select(True)
 
 
-def con_cursor():
+def stg_cursor():
     # Config: manually reset cursor
     result = yesno("RESET CURSOR")
     if result == True:
         lcd.cursor_pos = (0, 0)
         sleep(0.2)
 
-def con_clear():
+def stg_clear():
     # Config: manually clear lcd
     result = yesno("CLEAR LCD")
     if result == True:
@@ -720,17 +797,20 @@ def con_display():
                 current = 0
 
         elif choose == "select":
-            bottom_line = format_length(str(configuration[current_con]))
-            update_display(top_line, bottom_line)
-            wait_select()
+            top_line = format_length(current_con, DEFAULTLEN-5)+ ": "
+            bottom_line = str(configuration[current_con])
+            dsp_scroll_tool(top_line, bottom_line)
 
         elif choose == "back":
             break
 
-def con_etest():
+def bug_etest():
     # Config: create false error for testing
     error_type = num_select("SET ERROR CODE:", [0,1,2,3])
-    error("E"+str(error_type)+"##")
+
+    if (error_type != "!"):
+        error("E"+str(error_type)+"##")
+
 
 def cne_status():
     # Displays the status values for telemtry downlink
@@ -759,6 +839,9 @@ def cne_status():
                 current = 0
         elif choose == "back":
             break
+        elif (choose == "select"):
+            top_line = format_length(top_line, DEFAULTLEN-5)+ ": "
+            dsp_scroll_tool(top_line, con_line)
 
 def check_vamp_string(vamp):
     # Takes vamp as string and makes sure it conforms to standard
@@ -1204,6 +1287,11 @@ def cne_update():
     try:
         comparison = filecmp.cmp("parkes_master.py", update_target)
     except:
+        bottom_line = "search failed!  "
+        error("E352", "update failed - could not connect to Corvette")
+
+        update_display(top_line, bottom_line)
+        wait_select()
         error("E350", "PGS update comparison failed")
         return
 
@@ -1284,28 +1372,40 @@ def sys_debug():
 
     debug_func_dict = {
         1 : ["HARDWARE DIAG", bug_hardware_diag],
-        2 : ["HOTRUN SET", bug_hotrun]
+        2 : ["ERROR TEST", bug_etest],
+        3 : ["HOTRUN SET", bug_hotrun]
         }
+
 
     dsp_menu(debug_func_dict, "DEBUG")
         # Exit to menu, don't write below here
     # Exit to menu, don't write below here
+
+def sys_settings():
+    global configuration
+
+    settings_func_dict = {
+        1 : ["INPUT DELAY", stg_delay],
+        2 : ["BEEP", stg_beep],
+        3 : ["CURSOR RESET", stg_cursor],
+        4 : ["LCD CLEAR", stg_clear],
+    }
+
+    dsp_menu(settings_func_dict, "SETTINGS", True)
+
 
 def sys_config():
     # Main: select config function
     global configuration
 
     config_func_dict = {
-        1 : ["INPUT DELAY", con_delay],
-        2 : ["BEEP", con_beep],
-        3 : ["CURSOR RESET", con_cursor],
-        4 : ["LCD CLEAR", con_clear],
-        5 : ["CONFIG VALUES", con_display],
+        1 : ["SETTINGS", sys_settings],
+        2 : ["CONFIG VALUES", con_display],
+        3 : ["ERROR TYPE", con_error_type],
+        4 : ["ABOUT", con_about],
+        5 : ["DEBUG", sys_debug],
         6 : ["REBOOT", con_reboot],
-        7 : ["ERROR TEST", con_etest],
-        8 : ["SHUTDOWN", con_shutdown],
-        9 : ["ABOUT", con_about],
-        10 : ["DEBUG", sys_debug]
+        7 : ["SHUTDOWN", con_shutdown]
         }
 
     dsp_menu(config_func_dict, "CONFIG", True)
@@ -1313,19 +1413,30 @@ def sys_config():
     # Exit to menu, don't write below here
 
 
+def con_error_type():
+    while True:
 
+        code = ["E", "_", " ", " "]
+        index = 1
 
-
-
+        while (index < 4):
+            code[index] = num_select("NEXT DIGIT:",[0,1,2,3,4,5,6,7,8,9])
+            code[index + 1] = "_"
+            index += 1
 
 
 def lch_parkes_fire():
+    global configuration
     # Used for testing engines without the preflight tests
 
     sure_go = yesno("RUN HOTFIRE?")
     if not sure_go:
         return
     error("E290")
+
+    if not (configuration["parkes_ignitor"]):
+        error("E204")
+        return
 
     confirm("HOTFIRE ACTIVE")
     sleep(2)
@@ -1401,7 +1512,7 @@ def dsp_arm_status(missile="unknown", key="unknown"):
 
 def dsp_countdown():
     # entering countdown display
-    launch_decision = "GO"
+    launch_decision = True
 
     # display countdown in cute way
     for count in range(11):
@@ -1427,8 +1538,8 @@ def dsp_countdown():
             update_display(top_line, bottom_line)
             sleep(3)
             sys_set_output(GPIO_LIGHT, False)
-            launch_decision = "ABORT"
-            break
+            launch_decision = False
+            return launch_decision
 
     # left countdown loop, return ultimate decision
     return launch_decision
@@ -1493,7 +1604,7 @@ def lch_epoch_fire():
     # enter arm and countdown phase
     continue_launch = dsp_arm_sequence(hold, armed)
     if continue_launch:
-        countdown_res = dsp_countdown()
+        continue_launch = dsp_countdown()
 
     if continue_launch:
         # if we're here, we're launching boys
@@ -1519,10 +1630,6 @@ def lch_epoch_fire():
 
     # end of hotfire, cleanup
     sys_set_output(GPIO_LIGHT, False)
-
-
-
-
 
 
 
@@ -1662,6 +1769,7 @@ def lch_preflight_all():
         parkes_radio.write(command.encode())
 
         vega_confirmed = cne_vamp_destruct(cne_receive(override_timeout=True))
+
         if vega_confirmed[2] != 0:
             # did not get proper confirmation from vega
             error("E294", str(vega_confirmed))
@@ -1698,7 +1806,8 @@ def lch_preflight_all():
     command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
     parkes_radio.write(command.encode())
 
-    epoch_poll_results = cne_vamp_destruct(cne_receive())
+    # grab poll results from radio with timeout enabled
+    epoch_poll_results = cne_vamp_destruct(cne_receive(override_timeout=True))
 
     if epoch_poll_results[3] == 11111:
         error("E298", str(vega_poll_results))
@@ -1885,7 +1994,7 @@ def sys_launch():
     launch_func_dict = {
         1 : ["AUTOSEQUENCE", lch_launch_program],   # main launch program
         2 : ["ARM VEGA", lch_arm],                  # arm vega for flight
-        3 : ["VEGA DOWNLNK", lch_force_launch],     # vega downlink mode
+        3 : ["LCH + VEGA", lch_force_launch],     # vega downlink mode
         4 : ["PRKS DOWNLNK", dsp_downlink],         # parkes downlink mode
         5 : ["EPOCH FIRE", lch_epoch_fire],         # commands epoch ignition
         6 : ["PARKES FIRE", lch_parkes_fire],       # commands parkes ignition
@@ -2085,7 +2194,7 @@ def cfg_startuptest_modify(set_to=False):
     global run_startup_test
     run_startup_test = set_to
 
-    if not set_to:
+    if not set_to and not sys_check_status(GPIO_MISSILE):
         error("E202")
 
 def cfg_include_vega():
@@ -2112,12 +2221,14 @@ def cfg_id_gen():
 
 def sys_config_interpreter(config_file):
     # func accepts configuration file and interprets it
-
+    global hot_run
     # list of line identifiers
     identifier_type = {
         "!" : "value",
         "$" : "command"
     }
+
+
 
     #possible configuration commands
     config_commands = {
@@ -2154,6 +2265,12 @@ def sys_config_interpreter(config_file):
                 command = content.rstrip()
                 config_commands[command]()
 
+    # check for hotrun force command
+    if (sys_check_status(GPIO_MISSILE)):
+        hot_run = True
+        error("E902", "HOTRUN forced on startup")
+        error("E211")
+
 def sys_startup_test():
     # function to run startup tests as required
     startup_errors = {
@@ -2175,7 +2292,7 @@ def bug_hotrun():
     # Allows for on the fly switching between hardware and software UI
     global hot_run
 
-    hot_run = yesno("SET HOTRUN?")
+    hot_run = yesno("HOTRUN TRUE?")
 
     confirm("CONFIRM OK")
     error("E333", "hotrun set - " + str(hot_run))
@@ -2320,9 +2437,11 @@ while sys_main_status() == "REBOOT":
     if run_startup_test:
         sys_startup_test()
 
+
     config_file.close()
 
     lcd.clear()
+
     sys_main_menu()
 
 
@@ -2336,7 +2455,8 @@ sys_shutdown_process()
 # System shutdown stuff
 lcd.clear()
 GPIO.cleanup()
-parkes_radio.close()
+if (configuration["telemetry"]["port_open"]):
+    parkes_radio.close()
 
 # clean shutdown, disconnects SSH and prevents SD corruption
 from subprocess import call
