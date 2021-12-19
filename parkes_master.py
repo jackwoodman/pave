@@ -15,6 +15,7 @@
 
 import os
 import time
+import random
 import serial
 import threading
 import copy
@@ -52,6 +53,7 @@ GPIO_MISSILE = 15  # missile switch input
 GPIO_LAUNCH = 11   # launch button input
 GPIO_IGNITOR = 12  # ignitor trigger output
 GPIO_LIGHT = 32    # launch light output
+GPIO_LAMP = 36
 
 DEFAULT_NUMSEL = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 VAMP_STRING_STANDARD = {"v":5, "a":4, "m": 1, "p":5}
@@ -63,6 +65,7 @@ configuration = {
     # super important configuration dictionary that has become severely bloated
     "go_reboot": True,
     "go_kill": False,
+    "boot_time": time.time(),
     "vfs_update_queue": [],
     "internal_vers" : internal_version
     }
@@ -87,10 +90,11 @@ GPIO.setup(GPIO_CYCLE, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Cycle button - GPIO 
 GPIO.setup(GPIO_ARM, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Arm key - GPIO 27
 GPIO.setup(GPIO_MISSILE, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Arm key - GPIO 22
 GPIO.setup(GPIO_LAUNCH, GPIO.IN, pull_up_down=GPIO.PUD_UP) # Launch button - GPIO 17
-GPIO.setup(GPIO_LIGHT, GPIO.OUT) # Light  - GPIO 17
 
 # Defining Hardware Output
 GPIO.setup(GPIO_IGNITOR, GPIO.OUT) # Ignition Output - GPIO 18
+GPIO.setup(GPIO_LIGHT, GPIO.OUT) # Light  - GPIO 17
+GPIO.setup(GPIO_LAMP, GPIO.OUT) # Notification Lamp Output - GPIO 16
 
 
 
@@ -182,7 +186,6 @@ def sys_epoch_test(arm, ignition, amount):
             return 0
 
 def sys_epoch_fire(arm, ignition):
-    print("firing...")
 
     # commands epoch to fire
     if arm and ignition:
@@ -209,6 +212,12 @@ def sys_epoch_fire(arm, ignition):
             # epoch isn't ok to fire for whatever reason
             # TO-DO: sort reason from reason
             return 0
+    else:
+        # parkes triggered last minute abort
+        return 3
+
+    # unknown failure
+    return 4
 
 
 def sys_file_append(target_file, data):
@@ -251,6 +260,61 @@ def dsp_scroll_tool(top_text, bottom_text):
             update_display(top_line, bottom_line)
         elif (last_input == "back"):
             break
+
+def sys_epoch_menu():
+    global configuration
+
+    epoch_functions = {
+        1 : ["TEST ALL", epc_test_all],
+        2 : ["TEST SINGLE", epc_test_single],
+        3 : ["ECHO", epc_echo],
+        4 : ["SHUTDOWN", epc_shutdown]
+        }
+
+    dsp_menu(epoch_functions, "EPOCH FUNCS")
+
+def epc_shutdown():
+    epc_command(6)
+
+def epc_test_all():
+    epc_command(2)
+    confirm("TESTING...")
+
+    # get confirmation
+    new_command = cne_receive(override_timeout=True, timeout_set=25)
+    if str(new_command) == "timeout":
+        error("E264")
+    else:
+        confirm("TEST CONFIRMED")
+
+def epc_command(command_id):
+    if not (configuration["telemetry"]["port_open"]):
+        cne_open_port(False)
+    v, a, m, p = "00000", "0000", str(command_id), "10000"
+    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+    parkes_radio.write(command.encode())
+
+def epc_test_single():
+    epc_command(3)
+
+    confirm("TESTING...")
+    # get confirmation
+    new_command = cne_receive(override_timeout=True, timeout_set=8)
+    if str(new_command) == "timeout":
+        error("E262")
+    else:
+        confirm("TEST CONFIRMED")
+
+def epc_echo():
+    epc_command(0)
+
+
+    # get confirmation
+    new_command = cne_receive(override_timeout=True, timeout_set=5)
+    if str(new_command) == "timeout":
+        error("E266", "unable to confirm test command received")
+    else:
+        error("E915")
 
 
 
@@ -347,7 +411,7 @@ def error(e_code, data=True, add_data=False):
     if e_code[1] in error_codes.keys():
         # If error code is correct
         code = e_code[1]
-
+        GPIO.output(GPIO_LAMP, GPIO.HIGH)
         new_error = "- " + error_codes[code][1] + " ("+str(e_code)+")"
 
         if (data):
@@ -368,6 +432,7 @@ def error(e_code, data=True, add_data=False):
 
         #run associated error function
         error_type(e_code)
+        GPIO.output(GPIO_LAMP, GPIO.LOW)
 
     else:
         # error code is incorrect
@@ -462,7 +527,7 @@ def format_length(input_string, length=DEFAULTLEN, remove_vowel=False, alignment
 
     return output_string
 
-def button_input(allow_idle=False):
+def button_input(allow_idle=False, slowdown=False):
     # Returns result of UI interaction
     if hot_run:
         return hardware_button_input(allow_idle)
@@ -501,34 +566,31 @@ def update_display(top_line, bottom_line, force_hotrun=False):
         error("E107")
 
 
-def hardware_button_input(allow_idle=False):
+def hardware_button_input(allow_idle=False, slowdown=False):
     # Input detection for flight mode
-    sleep_delay = configuration["rep_delay"]
+    sleep_delay = (configuration["rep_delay"] if not (slowdown) else (2))
+
     last_interaction_time = time.time()
-    #print("awaiting input...")
     while True:
-        if GPIO.input(GPIO_BACK) == GPIO.LOW:
-            #print("input detected: back")
+        if (GPIO.input(GPIO_BACK) == GPIO.LOW):
             sleep(sleep_delay)
             return "back"
 
-        if GPIO.input(GPIO_SELECT) == GPIO.LOW:
-            #print("input detected: select")
+        if (GPIO.input(GPIO_SELECT) == GPIO.LOW):
             sleep(sleep_delay)
             return "select"
 
-        if GPIO.input(GPIO_CYCLE) == GPIO.LOW:
-            #print("input detected: cycle")
+        if (GPIO.input(GPIO_CYCLE) == GPIO.LOW):
             sleep(sleep_delay)
             return "cycle"
 
-        if allow_idle:
+        if (allow_idle):
             # if idle display is allowed, check if needs to show
             if (time.time() - last_interaction_time) > IDLE_TIME:
-                error("E904", "Entering idle mode...")
+                error("E906", "Entering idle mode...")
                 con_about()
                 last_interaction_time = time.time()
-                error("E905", "Exiting idle mode")
+                error("E907", "Exiting idle mode")
 
 
 def software_button_input():
@@ -644,7 +706,6 @@ def wait_select(slowdown=False):
     while True:
         choose = button_input()
 
-
         if choose == "select":
             break
 
@@ -686,7 +747,7 @@ def sys_startup_animation():
     count = 0
 
     for i in range(11):
-        time_del = float((randint(1, 2)) / 10)
+        time_del = float((randint(1, 2)) / randint(12,19))
         filler = ""
         for i in range(count):
             filler += "="
@@ -703,6 +764,7 @@ def sys_startup():
     global hot_run
     # Everything in here is done as part of the loading screen
     GPIO.output(GPIO_LIGHT, GPIO.HIGH)
+    GPIO.output(GPIO_LAMP, GPIO.HIGH)
     error("E903", "PARKES WAKEUP")
     error("E904", "Startup initiated")
 
@@ -719,6 +781,7 @@ def sys_startup():
     update_display(format_length("", DEFAULTLEN), format_length(" READY", DEFAULTLEN))
     sleep(1.2)
     GPIO.output(GPIO_LIGHT, GPIO.LOW)
+    GPIO.output(GPIO_LAMP, GPIO.LOW)
     error("E905", "Startup complete")
 
 def stg_delay():
@@ -752,12 +815,26 @@ def con_shutdown():
         configuration["go_reboot"] = False
         configuration["go_kill"] = True
 
+
+def con_uptime():
+    global configuration
+    top_line = format_length("Current uptime: ")
+    t = configuration["start_time"]
+    bottom_line = format_length(f" {time.time()-t} secs")
+    wait_select()
+
 def con_about():
     # About the program - also used for idle screen
     top_line = "  PARKES v" + str(parkes_version) + "   "
     bottom_line = format_length(" J.Woodman 2021 ")
     update_display(top_line, bottom_line)
-    wait_select(True)
+    while True:
+        res = button_input(slowdown=True)
+
+        if (res == "select"):
+            return
+        elif (res == "cycle"):
+            con_uptime()
 
 
 def stg_cursor():
@@ -898,8 +975,7 @@ def cne_send(vamp):
         print(vamp)
         error("E310")
     command = "v"+str(v)+"_a"+str(a)+"_m"+str(m)+"_p"+str(p)+"\n"
-    command = command.encode()
-    parkes_radio.write(command)
+    parkes_radio.write(command.encode())
 
 def cne_receive(override_timeout=False, timeout_set=5):
     # Receives for command from parkes_radio - waits indefinitely
@@ -965,16 +1041,26 @@ def cne_heartbeat():
 
     # Main heartbeat loop - continues until hb_force_kill is triggered
     while configuration["telemetry"]["hb_force_kill"] == False:
+        #GPIO.output(GPIO_LAMP, GPIO.HIGH)
 
         rec_string = cne_receive()
         rec_vamp = cne_vamp_destruct(rec_string)
         configuration["telemetry"]["hb_data"].append(rec_vamp)
-        configuration["telemetry"]["hb_pid"] = rec_vamp[3]
+        configuration["telemetry"]["hb_pid"] = int(rec_vamp[3])
+        #GPIO.output(GPIO_LAMP, GPIO.LOW)
         sleep(1)
 
         hb_count += 1
+        AVG_SAMPLE = 10
         try:
-            configuration["telemetry"]["hb_sigstrn"] = (hb_count / rec_vamp[3]) * 100
+            avg = 0
+            # find avg value of last AVG_SAMPLE sig strengths
+            for i in range(AVG_SAMPLE):
+                avg += (hb_count / int(configuration["telemetry"]["hb_data"][-i][3]))
+            avg /= AVG_SAMPLE
+            configuration["telemetry"]["hb_sigstrn"] = avg
+
+
         except:
             has_failed = True
 
@@ -1010,31 +1096,34 @@ def cne_heartbeat_confirmation():
 def dsp_handshake(status):
     # Displays current handshake status in a fun and easy to read way kill me please
     if status == False:
-        top_line = format_length("  <|3 - HB OFF  ")
-        bottom_line = format_length(" P-----/x/----V ")
+        top_line = format_length("  NO CONNECTION ")
+        bottom_line = format_length(" P ----/x/--- V ")
 
         update_display(top_line, bottom_line)
 
     if status == True:
-        top_line = format_length("  <3 - HB ON  ")
-        bottom_line = format_length(" P------------V ")
+        top_line = format_length("  CONNECTING  ")
+        bottom_line = format_length(" P ---------- V ")
         update_display(top_line, bottom_line)
 
         sleep(1)
+        line_length = 10
 
         for t in range(3):
-            for i in range(0, 12):
+            GPIO.output(GPIO_LAMP, GPIO.HIGH)
+            for i in range(0, line_length):
                 start = ""
                 for x in range(i):
-                    start += "="
+                    start += "-"
                 start += ">"
 
-                for y in range(12-(i+1)):
+                for y in range(line_length-(i+1)):
                     start += "-"
-                bottom_line = format_length(" P"+start+"V ")
-                top_line = format_length("<3 - HB ON")
+                bottom_line = format_length(" P "+start+" V ")
+                top_line = format_length("  CONNECTING  ")
                 update_display(top_line, bottom_line)
                 sleep(0.1)
+            GPIO.output(GPIO_LAMP, GPIO.LOW)
 
         confirm("HANDSHAKE GOOD")
 
@@ -1131,12 +1220,10 @@ def dsp_upload_config(status, data=False):
 
 def dsp_hb_view(status):
     if status == True:
-        desired_time = 10
-        run_view = True
-        top_line = format_length("HEARTBEAT:  LIVE")
-        init_time = time.time()
-        while run_view == True:
-
+        while True:
+            run_view = True
+            top_line = format_length("HEARTBEAT:  LIVE")
+            init_time = time.time()
             sig = str(int(configuration["telemetry"]["hb_sigstrn"])) + "%"
             if len(sig) < 4:
                 sig = " "+sig
@@ -1152,8 +1239,9 @@ def dsp_hb_view(status):
             update_display(top_line, bottom_line)
             time_diff = time.time() - init_time
             sleep(0.1)
-            if time_diff > 10:
-                run_view = False
+
+            if (button_input() == "select"):
+                break
     elif status == False:
         confirm("HEARTBEAT DEAD")
 
@@ -1361,7 +1449,8 @@ def sys_connect():
         3 : ["HEARTBEAT", cne_hb_menu],
         4 : ["VFS CONFIG", cne_vfs_menu],
         5 : ["UPDATE PGS", cne_update],
-        6 : ["PORT OPEN", cne_open_port]
+        6 : ["PORT OPEN", cne_open_port],
+        7 : ["EPOCH", sys_epoch_menu]
         }
 
     dsp_menu(connect_func_dict, "CONNECT")
@@ -1510,12 +1599,13 @@ def dsp_arm_status(missile="unknown", key="unknown"):
     bottom_line = f"   [{missile_status}]  |  [{key_status}]  "
     update_display(top_line, bottom_line)
 
-def dsp_countdown():
+def dsp_countdown(lcc=0, am=0):
     # entering countdown display
     launch_decision = True
 
     # display countdown in cute way
     for count in range(11):
+
         current = 10 - count
         current_str = str(current).zfill(2)
 
@@ -1529,7 +1619,10 @@ def dsp_countdown():
 
         top_line = f"     - {current_str} -     "
         update_display(top_line, bottom_line)
-        sleep(0.95)
+        GPIO.output(GPIO_LAMP, GPIO.HIGH)
+        sleep(0.7)
+        GPIO.output(GPIO_LAMP, GPIO.LOW)
+        sleep(0.25)
 
         if not sys_check_status(GPIO_ARM) or not sys_check_status(GPIO_MISSILE):
             # either arm keyswtich or missile disengaged, abort countdown
@@ -1539,10 +1632,10 @@ def dsp_countdown():
             sleep(3)
             sys_set_output(GPIO_LIGHT, False)
             launch_decision = False
-            return launch_decision
+            return (launch_decision, lcc)
 
     # left countdown loop, return ultimate decision
-    return launch_decision
+    return (launch_decision, lcc + (am * launch_decision))
 
 def dsp_arm_sequence(hold=True, armed=False):
     global configuration
@@ -1604,7 +1697,7 @@ def lch_epoch_fire():
     # enter arm and countdown phase
     continue_launch = dsp_arm_sequence(hold, armed)
     if continue_launch:
-        continue_launch = dsp_countdown()
+        continue_launch, code = dsp_countdown()
 
     if continue_launch:
         # if we're here, we're launching boys
@@ -1627,6 +1720,11 @@ def lch_epoch_fire():
         elif com_res == 2:
             # connection to epoch timed out
             error("E260", "Timeout - unable to connect to Epoch")
+        elif com_res == 3:
+            error("E262")
+
+        elif com_res == 4:
+            error("E263", "Ignition confirmation not available")
 
     # end of hotfire, cleanup
     sys_set_output(GPIO_LIGHT, False)
@@ -1743,6 +1841,7 @@ def lch_preflight_all():
     v_count, e_count, p_count = 0,0,0
     continue_poll = True
     error("994", "Entering preflight checks")
+
     # Ask for flight configuration and preflight checks
     configuration["launch"]["preflight_status"] = "parkes..."
     dsp_preflight_show()
@@ -1773,6 +1872,7 @@ def lch_preflight_all():
         if vega_confirmed[2] != 0:
             # did not get proper confirmation from vega
             error("E294", str(vega_confirmed))
+            print("--- " +vega_confirmed)
             continue_poll = False
 
         sleep(0.2)
@@ -1825,21 +1925,24 @@ def lch_preflight_all():
     # calculate go counts and set final preflight status
     pass_count = v_count + e_count + p_count
     pf_stat = lch_status_compile(v_count, e_count, p_count)
+    error("E986", pf_stat)
     configuration["launch"]["preflight_status"] = pf_stat
 
     # if three GO counts, return good to go
     if pass_count == 3:
+        # confirm launch is go
         dsp_preflight_show()
         sleep(1)
-        top_line = "   ALL SYSTEMS  "
-        bottom_line = "     ARE GO     "
+        top_line = "  ALL SYSTEMS  "
+        bottom_line = "    ARE GO     "
         update_display(top_line, bottom_line)
         sleep(4)
         return True
 
     elif pass_count > 3:
         # oh no do something TODO
-        error("UNKNOWN")
+        error("E288", f"Pass count = {pass_count}")
+        return False
     else:
         # not enough GO counts, returning abort
         dsp_preflight_show()
@@ -1861,6 +1964,10 @@ def lch_launch_program():
     # this is the big one
     global configuration
 
+    # two random ints that are part of launch confirmation
+    launch_commit_code = random.randint(0, 10000)
+    inc_amount = random.randint(0, 100)
+
     sure_go = yesno("COMMIT LAUNCH?")
     if not sure_go:
         return
@@ -1881,8 +1988,9 @@ def lch_launch_program():
 
     passed_preflights = lch_preflight_all()
 
-    if not passed_preflights:
+    if (not passed_preflights):
         sys_set_output(GPIO_LIGHT, False)
+        error("E287")
         return
 
     configuration["launch"]["in_preflight"] = False
@@ -1891,9 +1999,9 @@ def lch_launch_program():
     error("E998", "launch countdown commit")
 
     # seek arm confirmation
-    continue_launch = dsp_countdown()
+    continue_launch, code = dsp_countdown(launch_commit_code, inc_amount)
 
-    if continue_launch == "GO":
+    if (continue_launch == True) and (code == launch_commit_code + inc_amount):
         # finally ok to launch, send command to epoch
         mis_status = sys_check_status(GPIO_MISSILE)
         key_status = sys_check_status(GPIO_ARM)
@@ -1914,8 +2022,12 @@ def lch_launch_program():
             error("E260", "Timeout - unable to connect to Epoch")
             sys_set_output(GPIO_LIGHT, False)
     else:
-        error("E943", continue_launch)
-        sys_set_output(GPIO_LIGHT, False)
+        if (continue_launch == True) and (code != launch_commit_code + inc_amount):
+            error("E944", f"{code} != {launch_commit_code} + {inc_amount}")
+
+        else:
+            error("E943", f"{code} != {launch_commit_code} + {inc_amount}")
+            sys_set_output(GPIO_LIGHT, False)
 
 
 def lch_force_launch():
@@ -1950,6 +2062,7 @@ def lch_arm():
     cne_send(arm_vamp)
 
 def dsp_downlink(demo=False):
+    global configuration
     flight_downlink = []
     downlinking = True
     modetype = {
@@ -1966,6 +2079,9 @@ def dsp_downlink(demo=False):
     exit_triggers = [6, 7]
     # Designed as a lightweight function to display data directly
     while downlinking:
+
+        if not (configuration["telemetry"]["port_open"]):
+            cne_open_port()
         incoming = parkes_radio.read_until()
         try:
             v,a,m,p = cne_vamp_destruct(incoming.decode())
@@ -1995,7 +2111,7 @@ def sys_launch():
         1 : ["AUTOSEQUENCE", lch_launch_program],   # main launch program
         2 : ["ARM VEGA", lch_arm],                  # arm vega for flight
         3 : ["LCH + VEGA", lch_force_launch],     # vega downlink mode
-        4 : ["PRKS DOWNLNK", dsp_downlink],         # parkes downlink mode
+        4 : ["VEGA DOWNLNK", dsp_downlink],         # parkes downlink mode
         5 : ["EPOCH FIRE", lch_epoch_fire],         # commands epoch ignition
         6 : ["PARKES FIRE", lch_parkes_fire],       # commands parkes ignition
         7 : ["VEGA DEMO", lch_vega_demo]            # vega demo downlink
@@ -2029,7 +2145,7 @@ def sys_shutdown_process():
     sleep(1)
     top_line, bottom_line = "PARKES v" + str(parkes_version) + "     ", format_length("shutting down", DEFAULTLEN)
     update_display(top_line, bottom_line)
-    error("E900", "Shutdown process initiated")
+    error("E908", "Shutdown process initiated")
     sleep(4)
 
     # Non-system shutdown stuff here
@@ -2039,7 +2155,7 @@ def sys_shutdown_process():
 
 
     top_line, bottom_line = format_length(" ", DEFAULTLEN), format_length(" done", DEFAULTLEN)
-    error("E901", "Shutdown process complete")
+    error("E909", "Shutdown process complete")
     update_display(top_line, bottom_line)
     sleep(2)
 
@@ -2346,7 +2462,6 @@ def bug_hardware_out(output_name, output_pin):
 
     update_display(topline, bottomline)
     seco, counter, loop_extend = 0, 1, 10
-
     # flip high and low, wait 2 seconds
     sleep(1)
     GPIO.output(output_pin, GPIO.HIGH)
@@ -2395,7 +2510,8 @@ def bug_hardware_diag():
     }
 
     hardware_output = {
-        "light"   : GPIO_LIGHT
+        "light"   : GPIO_LIGHT,
+        "lamp"    : GPIO_LAMP
     }
 
     confirm("HARDWARE DIAG")
@@ -2425,7 +2541,10 @@ while sys_main_status() == "REBOOT":
     run_startup_test, expected_value, configuration["go_reboot"], vega_in_loop = True, 0, False, False
 
     # find config file
-    config_file = open("/home/pi/parkes_config.txt", "r")
+    try:
+        config_file = open("/home/pi/parkes_config.txt", "r")
+    except:
+        error("108")
 
     # run startup functions and setup processes
     sys_startup()
