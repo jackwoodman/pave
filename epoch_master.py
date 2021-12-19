@@ -1,7 +1,7 @@
 #els
 '''
     ==========================================================
-    Epoch Launch Software, version 0.1
+    Epoch Launch Software, version 0.2
     Copyright (C) 2021 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
@@ -21,8 +21,8 @@ import RPi.GPIO as GPIO
 from time import sleep
 
 # Variables
-epoch_version = 0.1
-internal_version = "0.1.2"
+epoch_version = 0.2
+internal_version = "0.2.0"
 
 receiving_command = True
 ready_fire = False
@@ -35,6 +35,8 @@ error_log, flight_log = [], []
 # Constants
 IGNITION_DELAY = 5
 COMP_ID = 1
+GPIO_RED = 16
+GPIO_GREEN = 18
 
 # GPIO setup
 ignitor_x = 11
@@ -48,17 +50,20 @@ z_power = 40
 GPIO.setwarnings(False)
 GPIO.setmode(GPIO.BOARD)
 
-GPIO.setup(ignitor_x, GPIO.OUT)    # needs to be defined
-GPIO.setup(ignitor_y, GPIO.OUT)    # needs to be defined
-GPIO.setup(ignitor_z, GPIO.OUT)    # needs to be defined
+GPIO.setup(ignitor_x, GPIO.OUT)
+GPIO.setup(ignitor_y, GPIO.OUT)
+GPIO.setup(ignitor_z, GPIO.OUT)
 
-GPIO.setup(x_power, GPIO.OUT)      # needs to be defined
-GPIO.setup(y_power, GPIO.OUT)      # needs to be defined
-GPIO.setup(z_power, GPIO.OUT)      # needs to be defined
+GPIO.setup(x_power, GPIO.OUT)
+GPIO.setup(y_power, GPIO.OUT)
+GPIO.setup(z_power, GPIO.OUT)
 
 GPIO.output(x_power, GPIO.HIGH)
 GPIO.output(y_power, GPIO.HIGH)
 GPIO.output(z_power, GPIO.HIGH)
+
+GPIO.setup(GPIO_RED, GPIO.OUT)
+GPIO.setup(GPIO_GREEN, GPIO.OUT)
 
 
 
@@ -146,25 +151,32 @@ def vamp_destruct(vamp):
 
     try:
         v, a, m, p = vamp_decom
+        vamp = (int(v), int(a), int(m), int(p))
+        return vamp
     except:
         print("E120")
-    vamp = (int(v), int(a), int(m), int(p))
-    return vamp
+        return "NULL"
+
 
 """==== EPOCH FUNCTIONS ===="""
+
+def shutdown():
+    from subprocess import call
+    call("sudo poweroff", shell=True)
+
 def echo():
     # oof oof dsp_error_nonfatal
     # this doesn't work yet but is vital
 
     sleep(1)
-    flight_logger("echo - active", duration())
+    flight_logger("-> echo - active", duration())
 
     v, a, m, p = "00000", "0000", "2", "20000"
     command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
     epoch_radio.write(command.encode())
-    sleep(1)
+    sleep(0.1)
 
-    flight_logger("echo - inactive", duration())
+    flight_logger("-> echo - inactive", duration())
 
 def relay_powerup(target="all"):
     # these can be combined
@@ -194,15 +206,26 @@ def startup():
     relay_powerup()
     print("starting up...")
 
+def turnOn(gpio_pin):
+    GPIO.output(gpio_pin, GPIO.HIGH)
 
+def turnOff(gpio_pin):
+    GPIO.output(gpio_pin, GPIO.LOW)
 
+def lightFlip(reps=1, duration=0.5):
+    for x in range(reps):
+        GPIO.output(GPIO_RED, GPIO.HIGH)
+        GPIO.output(GPIO_GREEN, GPIO.LOW)
+        time.sleep(duration)
+        GPIO.output(GPIO_GREEN, GPIO.HIGH)
+        GPIO.output(GPIO_RED, GPIO.LOW)
+        time.sleep(duration)
 
 def command_ignition():
     # Upon receiving command from Parkes, approve Epoch to fire.
-    flight_logger("command_ignition - active", duration())
-    sleep(1)
+    flight_logger("-> command_ignition - active", duration())
     open_port()
-    sleep(1)
+    sleep(0.1)
 
     # confirm with parkes that launch is imminent
     v, a, m, p = "00000", "0000", "9", "20000"
@@ -213,21 +236,21 @@ def command_ignition():
     flight_logger("commanding all_fire", duration())
 
     all_fire()
-    flight_logger("command_ignition - inactive", duration())
+    flight_logger("-> command_ignition - inactive", duration())
 
 def test_single(target_ignitor=ignitor_x):
     # stay for That
     sleep(1)
-    flight_logger("test_single - active", duration())
+    flight_logger("-> test_single - active", duration())
     select_fire(target_ignitor)
-    flight_logger("test_single - inactive", duration())
+    flight_logger("-> test_single - inactive", duration())
 
 def test_all():
     # yeah boy
     sleep(1)
-    flight_logger("test_all - active", duration())
+    flight_logger("-> test_all - active", duration())
     test_fire()
-    flight_logger("test_single - inactive", duration())
+    flight_logger("-> test_single - inactive", duration())
 
 
 
@@ -271,7 +294,15 @@ def command_fire():
             current_am = float(amount)
 
 def test_fire():
-    sleep(1)
+    flight_logger("-> test_fire - active", duration())
+    open_port()
+    sleep(0.2)
+
+    # confirm with parkes that test_fire is good
+    v, a, m, p = "00000", "0000", "9", "20000"
+    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+    epoch_radio.write(command.encode())
+    sleep(3)
     counter = 1
     seco = 0
 
@@ -294,8 +325,7 @@ def test_fire():
         sleep(counter)
         counter -= 0.1
 
-        if seco < 10 and counter < 0.1:
-            print("go")
+        if (seco < 10 and counter < 0.1):
             counter += 0.1
             seco += 1
 
@@ -311,11 +341,16 @@ def test_fire():
 
 # STARTUP
 init_time = time.time()
+
+GPIO.output(GPIO_RED, GPIO.HIGH)
+GPIO.output(GPIO_GREEN, GPIO.HIGH)
+
+
 flight_logger("epoch launch software - startup", duration())
 flight_logger("initialising pls - verison: " + str(epoch_version), duration())
 # Initialise epoch_radio
 open_port()
-time.sleep(1)
+time.sleep(1.5)
 flight_logger("port open", duration())
 
 command_dict = {
@@ -325,26 +360,36 @@ command_dict = {
     3 : test_single,
     4 : startup,
     5 : command_fire
+    6 : shutdown
 
 }
+GPIO.output(GPIO_RED, GPIO.LOW)
+GPIO.output(GPIO_GREEN, GPIO.LOW)
+lightFlip(4,0.4)
 
-
-
+time.sleep(2)
 while receiving_command:
+    GPIO.output(GPIO_GREEN, GPIO.HIGH)
     flight_logger("RECEIVING COMMAND...", duration())
     sleep(1)
     new_command = vamp_destruct(receive())
-    flight_logger("COMMAND: " + str(new_command), duration())
+    flight_logger("COMMAND: " + str(new_command[2])+" "+str(new_command), duration())
 
     target_program = new_command[2]
 
     target_comp = int(str(new_command[3])[0])
+
+    # i get the vibe this can be ditched, think was for debugging
     if __name__ == "__main__":
         try:
             # Check epoch is the intended target for command
             if target_comp == COMP_ID:
-
+                GPIO.output(GPIO_RED, GPIO.HIGH)
+                GPIO.output(GPIO_GREEN, GPIO.LOW)
                 command_dict[target_program]()
+                GPIO.output(GPIO_RED, GPIO.LOW)
+                GPIO.output(GPIO_GREEN, GPIO.HIGH)
+
         except KeyboardInterrupt:
             flight_logger("KeyboardInterrupt detected", duration())
             flight_logger("port closed", duration())
