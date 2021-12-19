@@ -1,7 +1,7 @@
 # error decoder
 
 # dependency of parkes_master.py, version 5.15 and up
-vers = 1.2
+vers = 1.4
 def setup():
     nonfatal = {
         "00" : "Non-fatal runtime error",
@@ -18,6 +18,7 @@ def setup():
         "05" : "Parkes version is out of date, update required",
         "06" : "Configuration file is out of date, update required",
         "07" : "hot_run not configured to bool",
+        "08" : "Configuration file does not exist / could not be found",
         "20" : "DEPRECATED",
         "21" : "DEPRECATED",
         "22" : "VAMP could not be verified as string",
@@ -32,11 +33,19 @@ def setup():
         "03" : "Hardware display update error",
         "04" : "Parkes does not have an ignition system connected",
         "10" : "Forcing launch may cause fatal issues, proceed with caution",
+        "11" : "Hotrun force is acknowledged",
         "50" : "Heartbeat couldn't be killed: no heartbeat active",
         "51" : "hb_count not 0 - resetting hb_count",
         "52" : "hb_status could not be determined",
         "60" : "Timeout - unable to connect to Epoch",
         "61" : "Epoch aborted ignition",
+        "62" : "Parkes aborted ignition",
+        "63" : "Ignition confirmation not available",
+        "64" : "Unable to confirm test all command received by Epoch",
+        "65" : "Unable to confirm test single command received by Epoch",
+        "66" : "Epoch echo was not good - could not connect",
+        "87" : "One or more preflights did not pass",
+        "88" : "Pass count encountered a serious error",
         "89" : "Serious error calling dsp_arm_sequence",
         "90" : "Hotfire is dangerous, proceed with caution",
         "92" : "Vega poll returned NO GO - autosequence abort",
@@ -69,15 +78,24 @@ def setup():
 
     message = {
         "00" : "Generic system message",
-        "01" : "Shutdown process initiated",
+        "01" : "Generic data log",
+        "02" : "Hotrun forced on startup",
         "03" : "PARKES WAKEUP",
         "04" : "Startup initiated",
+        "05" : "Startup complete",
+        "06" : "Entering idle mode...",
+        "07" : "Exiting idle mode",
+        "08" : "Shutdown process initiated",
         "09" : "Shutdown complete",
         "10" : "Opened port - parkes_radio",
         "11" : "Heartbeat loop initiated",
         "12" : "Heartbeat confirmation received",
         "13" : "Heartbeat confirmation received",
         "14" : "Heartbeat kill command received",
+        "15" : "Good Epoch echo",
+        "43" : "Continue Launch did not poll “GO”",
+        "44" : "Launch commit code summation is incorrect",
+        "86" : "Preflight Consensus has been met",
         "87" : "Launch commit marked",
         "88" : "Entering auto sequence",
         "89" : "Countdown ABORT",
@@ -153,3 +171,7 @@ def console_gui():
         print("    " +error_decoder(error))
         print(" ")
         print(" \n")
+
+if (__name__ == "__main__"):
+    # only go to gui if being run from command line (edecoe.py is main)
+    console_gui()
