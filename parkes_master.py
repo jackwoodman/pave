@@ -1,12 +1,12 @@
 # pgs
-# internal verion 0.5.2
+# internal verion 0.5.17
 
-# requires parkes_edecode.py (1.2 and up)
+# requires parkes_edecode.py (1.4 and up)
 
 '''
     ==========================================================
     Parkes Ground Software, version 0.5
-    Copyright (C) 2021 Jack Woodman - All Rights Reserved
+    Copyright (C) 2022 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
     * terms of the GNU GPLv3 license.
@@ -31,11 +31,11 @@ from parkes_edecode import error_decoder
 
 # hot_run defines whether Parkes will run using hardware or simulation.
 global hot_run
-hot_run = True
+hot_run = False
 # tested keeps track of if the current version has been live tested
-tested = False
+tested = True
 parkes_version = 0.5
-internal_version = "0.5.2"
+internal_version = "0.5.17"
 
 
 # Constants
@@ -153,7 +153,7 @@ def sys_fire(arm, ignition):
 
 
 def sys_epoch_test(arm, ignition, amount):
-    print("firing...")
+
 
     # commands epoch to fire
     if arm and ignition:
@@ -162,7 +162,7 @@ def sys_epoch_test(arm, ignition, amount):
             p = "30000"
         elif amount == "all":
             p = "20000"
-        v, a, m = "00000", "0000", "1"
+        v, a, m = "00000", "2000", "1"
         command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
         parkes_radio.write(command.encode())
 
@@ -190,7 +190,7 @@ def sys_epoch_fire(arm, ignition):
     # commands epoch to fire
     if arm and ignition:
         # fire command
-        v, a, m, p = "00000", "0000", "1", "10000"
+        v, a, m, p = "10101", "2000", "1", "10000"
         command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
         parkes_radio.write(command.encode())
 
@@ -205,12 +205,18 @@ def sys_epoch_fire(arm, ignition):
 
         target_program = final_command[2]
         target_comp = int(str(final_command[3])[0])
+        confirmation_code = int(str(final_command[0]))
 
         if target_comp == COMP_ID and target_program == 9:
+            if confirmation_code != 10101:
+                return 5
             return 1
         else:
             # epoch isn't ok to fire for whatever reason
             # TO-DO: sort reason from reason
+            print("FC="+str(final_command))
+            print("TP=" +str(target_program))
+            print("TC="+str(target_comp))
             return 0
     else:
         # parkes triggered last minute abort
@@ -290,7 +296,7 @@ def epc_test_all():
 def epc_command(command_id):
     if not (configuration["telemetry"]["port_open"]):
         cne_open_port(False)
-    v, a, m, p = "00000", "0000", str(command_id), "10000"
+    v, a, m, p = "00000", "2000", str(command_id), "10000"
     command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
     parkes_radio.write(command.encode())
 
@@ -411,8 +417,10 @@ def error(e_code, data=True, add_data=False):
     if e_code[1] in error_codes.keys():
         # If error code is correct
         code = e_code[1]
+        max_error_len = 14
         GPIO.output(GPIO_LAMP, GPIO.HIGH)
-        new_error = "- " + error_codes[code][1] + " ("+str(e_code)+")"
+        error_start = error_codes[code][1]
+        new_error = "- " + error_start.ljust(max_error_len, " ") + " ("+str(e_code)+")"
 
         if (data):
             # if data exists, add to log
@@ -745,9 +753,10 @@ def yesno(message):
 def sys_startup_animation():
     # Loading bar, will tie into actual progress soon
     count = 0
+    sleep(0.3)
 
     for i in range(11):
-        time_del = float((randint(1, 2)) / randint(12,19))
+        time_del = float(randint(1,5)/25)
         filler = ""
         for i in range(count):
             filler += "="
@@ -766,6 +775,10 @@ def sys_startup():
     GPIO.output(GPIO_LIGHT, GPIO.HIGH)
     GPIO.output(GPIO_LAMP, GPIO.HIGH)
     error("E903", "PARKES WAKEUP")
+
+    # set uptime start
+    configuration["start_time"] = time.time()
+
     error("E904", "Startup initiated")
 
     sleep(1)
@@ -816,17 +829,39 @@ def con_shutdown():
         configuration["go_kill"] = True
 
 
+def dsp_format_uptime():
+    c_uptime = time.time() - configuration["start_time"]
+
+    if (c_uptime > 60):
+        n_uptime = c_uptime / 60
+        classifier = "mins"
+    else:
+        n_uptime = c_uptime
+        classifier = "secs"
+
+    return (n_uptime, classifier)
+
+
 def con_uptime():
     global configuration
     top_line = format_length("Current uptime: ")
-    t = configuration["start_time"]
-    bottom_line = format_length(f" {time.time()-t} secs")
-    wait_select()
+
+    # grab uptime
+    uptime, classifier = dsp_format_uptime()
+
+    while True:
+        res = button_input(slowdown=False)
+        if (res == "select"):
+            return
+
+        uptime, classifier = dsp_format_uptime()
+        update_display(top_line, format_length(f" {uptime:.2f} {classifier}"))
+
 
 def con_about():
     # About the program - also used for idle screen
-    top_line = "  PARKES v" + str(parkes_version) + "   "
-    bottom_line = format_length(" J.Woodman 2021 ")
+    top_line = f"  PARKES v{parkes_version}   "
+    bottom_line = format_length(" J.Woodman 2022 ")
     update_display(top_line, bottom_line)
     while True:
         res = button_input(slowdown=True)
@@ -973,7 +1008,7 @@ def cne_send(vamp):
         v, a, m, p = vamp
     except:
         print(vamp)
-        error("E310")
+        error("E310", str(vamp))
     command = "v"+str(v)+"_a"+str(a)+"_m"+str(m)+"_p"+str(p)+"\n"
     parkes_radio.write(command.encode())
 
@@ -995,7 +1030,7 @@ def cne_receive(override_timeout=False, timeout_set=5):
             vamp = (floor(float(v)), floor(float(a)), int(m), int(p))
             return to_return
         except:
-            print("Timeout detected - " + str(vamp_decom))
+            print("- Timeout detected - " + str(vamp_decom))
             error("E313", "cne_receive() - Connection timeout")
             return "timeout"
 
@@ -1017,8 +1052,8 @@ def cne_vamp_destruct(vamp):
         v, a, m, p = vamp_decom
         vamp = (floor(float(v)), floor(float(a)), int(m), int(p))
     except:
-        print(vamp)
-        error("E311")
+
+        error("E311", vamp)
 
 
     return vamp
@@ -1555,7 +1590,7 @@ def lch_parkes_fire():
     bottom_line = format_length("-----active-----")
     update_display(top_line, bottom_line)
 
-    sleep(4)
+    sleep(3)
     # COUNTDOWN
     continue_launch = True
     for count in range(11):
@@ -1581,16 +1616,16 @@ def dsp_arm_status(missile="unknown", key="unknown"):
     # display the current status of the arm inputs during fire idle
     status = [" ","x","?"]
 
-    if missile == True:
+    if (missile == True):
         missile_status = status[1]
-    elif missile == False:
+    elif (missile == False):
         missile_status = status[0]
     else:
         missile_status = status[2]
 
-    if key == True:
+    if (key == True):
         key_status = status[1]
-    elif key == False:
+    elif (key == False):
         key_status = status[0]
     else:
         key_status = status[2]
@@ -1598,6 +1633,56 @@ def dsp_arm_status(missile="unknown", key="unknown"):
     top_line = " SAFETY | ARMED "
     bottom_line = f"   [{missile_status}]  |  [{key_status}]  "
     update_display(top_line, bottom_line)
+
+
+def dsp_parkes_title():
+    # this was an attempt to display customer characters
+    # it doesn't work, there might be a better way so leaving here ftm
+    title_display_length = 5
+
+    P = [[0b00000,0b01110,0b10001,0b10001,0b10001,0b10001,0b10001,0b01110],
+    [0b10000,0b10000,0b10000,0b10000,0b10000,0b10000,0b10000,0b00000]]
+
+    A = [[0b00000,0b01110,0b10001,0b10001,0b10001,0b10001,0b10001,0b10001],
+    [0b11111,0b10001,0b10001,0b10001,0b10001,0b10001,0b10001,0b00000]]
+
+    R = [[0b00000,0b11110,0b10001,0b10001,0b10001,0b10001,0b10001,0b11110],
+    [0b10010,0b10001,0b10001,0b10001,0b10001,0b10001,0b10001,0b00000]]
+
+    K = [[0b00000,0b10001,0b10001,0b10001,0b10010,0b10010,0b10100,0b11100],
+    [0b11000,0b10100,0b10010,0b10010,0b10001,0b10001,0b10001,0b00000]]
+
+    E = [[0b00000,0b01111,0b10000,0b10000,0b10000,0b10000,0b10000,0b10000],
+    [0b11111,0b10000,0b10000,0b10000,0b10000,0b10000,0b01111,0b00000]]
+
+    S = [[0b00000,0b01111,0b10000,0b10000,0b10000,0b10000,0b10000,0b01110],
+    [0b00001,0b00001,0b00001,0b00001,0b00001,0b00001,0b11110,0b00000]]
+
+    s_time = time.time()
+    lcd.create_char(7, [0b00000,0b00000,0b00000,0b00000,0b00000,0b00000,0b00000,0b00000])
+
+    # display title for title_display_length seconds
+    while (time.time() - s_time < title_display_length):
+
+        # switch between top and bottom frames
+        for index_set in range(0, 1):
+
+            # define character frames for either top or bottom of display
+            for (index, frame_set) in enumerate([P,A,R,K,E,S]):
+                lcd.create_char(index, frame_set[index_set])
+
+            # print spacing
+            for i in range(5):
+                lcd.write(7)
+
+            # print letter row
+            for frame in range(0, 5):
+                lcd.write(frame)
+
+            # print spacing
+            for i in range(5):
+                lcd.write(7)
+
 
 def dsp_countdown(lcc=0, am=0):
     # entering countdown display
@@ -1840,9 +1925,10 @@ def lch_preflight_all():
     global configuration
     v_count, e_count, p_count = 0,0,0
     continue_poll = True
-    error("994", "Entering preflight checks")
+    error("E994", "Entering preflight checks")
 
     # Ask for flight configuration and preflight checks
+    error("E940")
     configuration["launch"]["preflight_status"] = "parkes..."
     dsp_preflight_show()
     pf_results = lch_preflight_parkes()
@@ -1859,21 +1945,79 @@ def lch_preflight_all():
         dsp_preflight_show()
         p_count += 1
 
+
+
+    # Time to ask Epoch to launch_poll
+    configuration["launch"]["preflight_status"] = "epoch..."
+    error("E942")
+    dsp_preflight_show()
+
+    attempts = 0
+    while True:
+        v, a, m, p = "00000", "2000", "0", "10000"
+        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
+        parkes_radio.write(command.encode())
+        error("E983")
+        sleep(0.3)
+        epoch_poll_results = cne_vamp_destruct(cne_receive(True, 10))
+
+        if epoch_poll_results[3] == 11111:
+            error("E298", str(epoch_poll_results))
+            break
+
+        elif epoch_poll_results[3] == 20000 and epoch_poll_results[2] == 2:
+            error("E992")
+            configuration["launch"]["preflight_status"] = "epoch is GO"
+            dsp_preflight_show()
+            e_count += 1
+            break
+
+        if (epoch_poll_results == "timeout"):
+            error("E284")
+            attempts += 1
+
+        if (attempts == 3):
+            break
+
+    if (epoch_poll_results == "timeout"):
+        error("E285")
+        continue_poll = False
+
+
     if vega_in_loop:
         # Time to ask Vega to launch_poll
+        error("E941")
         configuration["launch"]["preflight_status"] = "vega..."
         dsp_preflight_show()
-        v, a, m, p = "00000", "0000", "0", "00000"
+        v, a, m, p = "00000", "2000", "0", "00000"
         command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
         parkes_radio.write(command.encode())
 
-        vega_confirmed = cne_vamp_destruct(cne_receive(override_timeout=True))
+        sleep(0.3)
+        loop_start = time.time()
+        while True:
+            error("E984")
+            vega_confirmed = cne_vamp_destruct(cne_receive(True, 10))
 
-        if vega_confirmed[2] != 0:
-            # did not get proper confirmation from vega
-            error("E294", str(vega_confirmed))
-            print("--- " +vega_confirmed)
+            if vega_confirmed[1] == 0:
+                break
+
+            if (vega_confirmed == "timeout"):
+                break
+
+
+        if (vega_confirmed == "timeout"):
+            error("E286")
             continue_poll = False
+
+        else:
+
+            if vega_confirmed[2] != 0:
+                # did not get proper confirmation from vega
+                error("E294", f"Reason: {str(vega_confirmed)}")
+                print(f"Reason: {str(vega_confirmed)}")
+
+                continue_poll = False
 
         sleep(0.2)
 
@@ -1885,42 +2029,29 @@ def lch_preflight_all():
                 error("E292", str(vega_poll_results))
 
 
-            elif vega_poll_results[3] == 20000:
+            elif vega_poll_results[3] == 20202:
                 error("E990", "Vega is GO")
                 configuration["launch"]["preflight_status"] = "vega is GO"
                 dsp_preflight_show()
                 v_count += 1
 
             else:
-                print(vega_poll_results[3])
                 error("E293", str(vega_poll_results))
     else:
         # no vega in loop, increment to override
         v_count += 1
 
 
-    # Time to ask Epoch to launch_poll
-    configuration["launch"]["preflight_status"] = "epoch..."
-    dsp_preflight_show()
-    v, a, m, p = "00000", "0000", "0", "10000"
-    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
-    parkes_radio.write(command.encode())
 
     # grab poll results from radio with timeout enabled
-    epoch_poll_results = cne_vamp_destruct(cne_receive(override_timeout=True))
-
-    if epoch_poll_results[3] == 11111:
-        error("E298", str(vega_poll_results))
-
-    elif epoch_poll_results[3] == 20000:
-        error("E993", "Epoch is GO")
-        configuration["launch"]["preflight_status"] = "epoch is GO"
-        dsp_preflight_show()
-        e_count += 1
-
-    else:
-        print(epoch_poll_results[3])
-        error("E296", str(epoch_poll_results))
+    #epoch_poll_results = cne_vamp_destruct(cne_receive(override_timeout=True))
+    #
+    # if epoch_poll_results[3] == 11111:
+    #     error("E298", str(epoch_poll_results))
+    #
+    # else:
+    #
+    #     error("E296", str(epoch_poll_results))
 
     # calculate go counts and set final preflight status
     pass_count = v_count + e_count + p_count
@@ -1932,11 +2063,12 @@ def lch_preflight_all():
     if pass_count == 3:
         # confirm launch is go
         dsp_preflight_show()
-        sleep(1)
+        sleep(2)
+        error("E993")
         top_line = "  ALL SYSTEMS  "
         bottom_line = "    ARE GO     "
         update_display(top_line, bottom_line)
-        sleep(4)
+        sleep(3)
         return True
 
     elif pass_count > 3:
@@ -1998,6 +2130,7 @@ def lch_launch_program():
     sleep(2)
     error("E998", "launch countdown commit")
 
+
     # seek arm confirmation
     continue_launch, code = dsp_countdown(launch_commit_code, inc_amount)
 
@@ -2021,6 +2154,11 @@ def lch_launch_program():
             # connection to epoch timed out
             error("E260", "Timeout - unable to connect to Epoch")
             sys_set_output(GPIO_LIGHT, False)
+
+        elif com_res == 5:
+            error("E267")
+            sys_set_output(GPIO_LIGHT, False)
+
     else:
         if (continue_launch == True) and (code != launch_commit_code + inc_amount):
             error("E944", f"{code} != {launch_commit_code} + {inc_amount}")
@@ -2028,6 +2166,7 @@ def lch_launch_program():
         else:
             error("E943", f"{code} != {launch_commit_code} + {inc_amount}")
             sys_set_output(GPIO_LIGHT, False)
+
 
 
 def lch_force_launch():
@@ -2064,6 +2203,7 @@ def lch_arm():
 def dsp_downlink(demo=False):
     global configuration
     flight_downlink = []
+    error("E985")
     downlinking = True
     modetype = {
         0 : " VEGA IDLE      ",
@@ -2082,13 +2222,13 @@ def dsp_downlink(demo=False):
 
         if not (configuration["telemetry"]["port_open"]):
             cne_open_port()
-        incoming = parkes_radio.read_until()
+        incoming = cne_receive(True, 1)
         try:
-            v,a,m,p = cne_vamp_destruct(incoming.decode())
+            v,a,m,p = cne_vamp_destruct(incoming)
 
-            update_display(modetype[m], "V:"+str(v)+"  A:"+str(a)+"m")
+            update_display(modetype[m], "V:"+str(v).ljust(4," ")+"  A:"+str(a)+"m")
         except:
-            error("E311", incoming.decode())
+            error("E311", incoming)
 
         if not demo:
             # not in demo mode, check for triggers to leave downlink
@@ -2556,13 +2696,11 @@ while sys_main_status() == "REBOOT":
     if run_startup_test:
         sys_startup_test()
 
-
     config_file.close()
 
     lcd.clear()
 
     sys_main_menu()
-
 
 
 
