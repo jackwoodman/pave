@@ -21,6 +21,7 @@ import threading
 import copy
 import filecmp
 import RPi.GPIO as GPIO
+import pave_comms
 from math import floor
 from time import sleep
 from random import randint
@@ -31,11 +32,11 @@ from parkes_edecode import error_decoder
 
 # hot_run defines whether Parkes will run using hardware or simulation.
 global hot_run
-hot_run = False
+hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = True
 parkes_version = 0.5
-internal_version = "0.5.17"
+internal_version = "0.5.23"
 
 
 # Constants
@@ -159,21 +160,21 @@ def sys_epoch_test(arm, ignition, amount):
     if arm and ignition:
         # fire command
         if amount == "single":
-            p = "30000"
+            p = 30000
         elif amount == "all":
-            p = "20000"
-        v, a, m = "00000", "2000", "1"
-        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
-        parkes_radio.write(command.encode())
+            p = 20000
 
+        v, a, m = 00000, 2000, 1
+
+        pave_comms.send((v,a,m,p), parkes_radio)
 
         # get confirmation
-        new_command = cne_receive(override_timeout=True, timeout_set=5)
+        final_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=5)
 
-        if str(new_command) == "timeout":
+        if str(final_command) == "timeout":
             return 2
 
-        final_command = cne_vamp_destruct(new_command)
+
 
         target_program = final_command[2]
         target_comp = int(str(final_command[3])[0])
@@ -190,24 +191,20 @@ def sys_epoch_fire(arm, ignition):
     # commands epoch to fire
     if arm and ignition:
         # fire command
-        v, a, m, p = "10101", "2000", "1", "10000"
-        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
-        parkes_radio.write(command.encode())
-
+        fire_epoch = (10101, 2000, 1, 10000)
+        pave_comms.send(fire_epoch, parkes_radio)
 
         # get confirmation
-        new_command = cne_receive(override_timeout=True, timeout_set=5)
+        final_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=5)
 
-        if str(new_command) == "timeout":
+        if str(final_command) == "timeout":
             return 2
 
-        final_command = cne_vamp_destruct(new_command)
+        target_program = get_vamp(final_command, "m")
+        target_comp = int(str(get_vamp(final_command, "p"))[0])
+        confirmation_code = get_vamp(final_command, "v")
 
-        target_program = final_command[2]
-        target_comp = int(str(final_command[3])[0])
-        confirmation_code = int(str(final_command[0]))
-
-        if target_comp == COMP_ID and target_program == 9:
+        if (target_comp == COMP_ID and target_program == 9):
             if confirmation_code != 10101:
                 return 5
             return 1
@@ -217,6 +214,7 @@ def sys_epoch_fire(arm, ignition):
             print("FC="+str(final_command))
             print("TP=" +str(target_program))
             print("TC="+str(target_comp))
+            print("CI="+str(COMP_ID))
             return 0
     else:
         # parkes triggered last minute abort
@@ -287,7 +285,8 @@ def epc_test_all():
     confirm("TESTING...")
 
     # get confirmation
-    new_command = cne_receive(override_timeout=True, timeout_set=25)
+    new_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=25)
+
     if str(new_command) == "timeout":
         error("E264")
     else:
@@ -296,16 +295,15 @@ def epc_test_all():
 def epc_command(command_id):
     if not (configuration["telemetry"]["port_open"]):
         cne_open_port(False)
-    v, a, m, p = "00000", "2000", str(command_id), "10000"
-    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
-    parkes_radio.write(command.encode())
+    epc_com = (00000, 2000, command_id, 10000)
+    pave_comms.send(epc_com, parkes_radio)
 
 def epc_test_single():
     epc_command(3)
 
     confirm("TESTING...")
     # get confirmation
-    new_command = cne_receive(override_timeout=True, timeout_set=8)
+    new_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=8)
     if str(new_command) == "timeout":
         error("E262")
     else:
@@ -316,7 +314,7 @@ def epc_echo():
 
 
     # get confirmation
-    new_command = cne_receive(override_timeout=True, timeout_set=5)
+    new_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=5)
     if str(new_command) == "timeout":
         error("E266", "unable to confirm test command received")
     else:
@@ -436,7 +434,7 @@ def error(e_code, data=True, add_data=False):
 
         # display error in consol and add to errorlog
         print(new_error)
-        sys_file_append("parkes_errorlog.txt", new_error)
+        sys_file_append("errorlog.txt", new_error)
 
         #run associated error function
         error_type(e_code)
@@ -756,7 +754,7 @@ def sys_startup_animation():
     sleep(0.3)
 
     for i in range(11):
-        time_del = float(randint(1,5)/25)
+        time_del = float(randint(1,5)/40)
         filler = ""
         for i in range(count):
             filler += "="
@@ -979,6 +977,7 @@ def check_vamp_tuple(vamp):
 def cne_open_port(user_conf=True):
     global parkes_radio
     global configuration
+    global DEFAULT_RADIO
     # Opens the default port for Parkes transceiver
 
     # check that port isn't already open
@@ -997,12 +996,15 @@ def cne_open_port(user_conf=True):
         )
     error("E910", "opened port - parkes_radio")
 
+    DEFAULT_RADIO = parkes_radio
+
     configuration["telemetry"]["port_open"] = True  # Set port_open config flag
 
     if user_conf is True:
         confirm("PORT OPENED")
 
 def cne_send(vamp):
+    # depreciated in version 0.5.20
     # Sends command over radio
     try:
         v, a, m, p = vamp
@@ -1024,13 +1026,14 @@ def cne_receive(override_timeout=False, timeout_set=5):
         vamp_decom = []
         parkes_radio.timeout = None
         for element in to_return.split("_"):
+
             vamp_decom.append(element[1:])
         try:
             v, a, m, p = vamp_decom
             vamp = (floor(float(v)), floor(float(a)), int(m), int(p))
             return to_return
         except:
-            print("- Timeout detected - " + str(vamp_decom))
+            print("- Timeout detected - " + str(vamp_decom) +" " + str(to_return))
             error("E313", "cne_receive() - Connection timeout")
             return "timeout"
 
@@ -1046,7 +1049,11 @@ def cne_vamp_destruct(vamp):
     # Breaks vamp into tuple of values
     vamp_decom = []
     for element in vamp.split("_"):
-        vamp_decom.append(element[1:])
+
+        # remove letter signifier (if is actually a letter)
+        if (element):
+            if (element.split()[0].isalpha()):
+                vamp_decom.append(element[1:])
 
     try:
         v, a, m, p = vamp_decom
@@ -1066,7 +1073,8 @@ def cne_heartbeat():
     receiving = True
     heartbeat_init_vamp = (10000, 0000, 8, 00000)
 
-    cne_send(heartbeat_init_vamp)
+    pave_comms.send(heartbeat_init_vamp, parkes_radio)
+
     hb_count = 0
     if hb_count < 0:
         error("E251")
@@ -1078,8 +1086,7 @@ def cne_heartbeat():
     while configuration["telemetry"]["hb_force_kill"] == False:
         #GPIO.output(GPIO_LAMP, GPIO.HIGH)
 
-        rec_string = cne_receive()
-        rec_vamp = cne_vamp_destruct(rec_string)
+        rec_vamp = pave_comms.receive(parkes_radio)
         configuration["telemetry"]["hb_data"].append(rec_vamp)
         configuration["telemetry"]["hb_pid"] = int(rec_vamp[3])
         #GPIO.output(GPIO_LAMP, GPIO.LOW)
@@ -1114,18 +1121,45 @@ def cne_heartbeat_thread():
     cne_hb_thread.start()
 
 
+def cne_compare_vamp(vamp_1, vamp_2):
+    # return true if two vamps are equal
+
+    for (e_1, e_2) in zip(vamp_1, vamp_2):
+        if (str(e_1) != str(e_2)):
+            return False
+
+    return True
+
+
+def get_vamp(vamp, data):
+    indexes = {
+        "v" : 0,
+        "a" : 1,
+        "m" : 2,
+        "p" : 3
+    }
+
+    return vamp[indexes[data]]
+
 def cne_heartbeat_confirmation():
     # Waits for hb conf from Vega, supports timeout of 5 seconds
     rec_con = False
     while rec_con == False:
-        result = cne_receive(override_timeout=True, timeout_set=5)
-        if "v10000_a1000_m8_p" in str(result):
+        result = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=5)
+
+
+        if (get_vamp(result, "m") == 8):
             error("E912", "Heartbeat confirmation received")
             rec_con = True
             return rec_con
-        elif str(result) == "timeout":
+
+        elif (result == "timeout"):
             error("E312", "Heartbeat connection timeout: could not establish connection")
             return False
+
+        elif (result == "unknown failure"):
+            print(result)
+
 
 
 def dsp_handshake(status):
@@ -1176,7 +1210,7 @@ def cne_handshake():
     handshake_vamp = (10000, 1000, 8, 00000)
 
     # Loop to send handshake / await response
-    cne_send(handshake_vamp)
+    pave_comms.send(handshake_vamp, parkes_radio)
 
     # Might need to put some sort of stopper here, in case it just steamrolls ahead
     heartbeat_conf_result =  cne_heartbeat_confirmation()
@@ -1189,7 +1223,10 @@ def cne_handshake():
 def cne_kill_heartbeat():
     # Finish the heartbeat thread
     global configuration
-    parkes_radio.write("v10000_a1000_m8_p00000\n".encode())
+
+    kill_hb = (10000, 1000, 8, 00000)
+    pave_comms.send(kill_hb, parkes_radio)
+
     configuration["telemetry"]["hb_force_kill"] = True
     error("E914", "Hb_force_kill is True, joining thread...")
     cne_hb_thread.join()
@@ -1362,7 +1399,7 @@ def cne_vfs_compiler():
      confirm("VFS LOG COMPILER")
 
      # Loop to send handshake / await response
-     cne_send(compile_vamp)
+     pave_comms.send(compile_vamp, parkes_radio)
      confirm("COMMAND SENT")
 
 
@@ -1539,7 +1576,6 @@ def sys_config():
 
 def con_error_type():
     while True:
-
         code = ["E", "_", " ", " "]
         index = 1
 
@@ -1954,18 +1990,18 @@ def lch_preflight_all():
 
     attempts = 0
     while True:
-        v, a, m, p = "00000", "2000", "0", "10000"
-        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
-        parkes_radio.write(command.encode())
+        epoch_pre = (0, 2000, 0, 10000)
+        pave_comms.send(epoch_pre, parkes_radio)
+
         error("E983")
         sleep(0.3)
-        epoch_poll_results = cne_vamp_destruct(cne_receive(True, 10))
+        epoch_poll_results = pave_comms.receive(parkes_radio, True)
 
-        if epoch_poll_results[3] == 11111:
+        if (get_vamp(epoch_poll_results, "p") == 11111):
             error("E298", str(epoch_poll_results))
             break
 
-        elif epoch_poll_results[3] == 20000 and epoch_poll_results[2] == 2:
+        elif get_vamp(epoch_poll_results, "p") == 20000 and get_vamp(epoch_poll_results, "m") == 2:
             error("E992")
             configuration["launch"]["preflight_status"] = "epoch is GO"
             dsp_preflight_show()
@@ -1989,21 +2025,28 @@ def lch_preflight_all():
         error("E941")
         configuration["launch"]["preflight_status"] = "vega..."
         dsp_preflight_show()
-        v, a, m, p = "00000", "2000", "0", "00000"
-        command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
-        parkes_radio.write(command.encode())
+
+        vega_pre = (0, 2000, 0, 00000)
+        pave_comms.send(vega_pre, parkes_radio)
 
         sleep(0.3)
         loop_start = time.time()
         while True:
             error("E984")
-            vega_confirmed = cne_vamp_destruct(cne_receive(True, 10))
+            vega_confirmed = pave_comms.receive(parkes_radio, True, 10)
 
-            if vega_confirmed[1] == 0:
+            if (get_vamp(vega_confirmed, "a") == 0):
+                # vega has confirmed poll receipt
+                print("yas")
                 break
 
             if (vega_confirmed == "timeout"):
+                # vega confirm timed out
                 break
+
+            else:
+                # never got confirmation code
+                print(vega_confirmed)
 
 
         if (vega_confirmed == "timeout"):
@@ -2023,13 +2066,14 @@ def lch_preflight_all():
 
         # check if worth continuing anyway
         if continue_poll:
-            vega_poll_results = cne_vamp_destruct(cne_receive(override_timeout=True))
+            vega_poll_results = pave_comms.receive(parkes_radio, True)
 
-            if vega_poll_results[3] == 21111:
+            if (get_vamp(vega_poll_results, "p") == 21111):
+
                 error("E292", str(vega_poll_results))
 
 
-            elif vega_poll_results[3] == 20202:
+            elif (get_vamp(vega_poll_results, "p") == 20202):
                 error("E990", "Vega is GO")
                 configuration["launch"]["preflight_status"] = "vega is GO"
                 dsp_preflight_show()
@@ -2177,7 +2221,7 @@ def lch_force_launch():
     confirm("FORCE CMMND SENT")
 
     # Loop to send handshake / await response
-    cne_send(force_vamp)
+    pave_comms.send(force_vamp, parkes_radio)
     sleep(0.2)
     dsp_downlink()
 
@@ -2189,7 +2233,7 @@ def lch_vega_demo():
     confirm("FORCE LOOP SENT")
 
     # Loop to send handshake / await response
-    cne_send(force_vamp)
+    pave_comms.send(force_vamp, parkes_radio)
     sleep(0.2)
     dsp_downlink(True)
 
@@ -2198,7 +2242,7 @@ def lch_arm():
     cne_open_port(False)
     arm_vamp = (10000, 1000, 0, 00000)
     # Loop to send handshake / await response
-    cne_send(arm_vamp)
+    pave_comms.send(arm_vamp, parkes_radio)
 
 def dsp_downlink(demo=False):
     global configuration
@@ -2217,31 +2261,59 @@ def dsp_downlink(demo=False):
         }
 
     exit_triggers = [6, 7]
+
     # Designed as a lightweight function to display data directly
     while downlinking:
 
         if not (configuration["telemetry"]["port_open"]):
             cne_open_port()
-        incoming = cne_receive(True, 1)
-        try:
-            v,a,m,p = cne_vamp_destruct(incoming)
+        incoming = pave_comms.receive(parkes_radio, True, 5)
 
-            update_display(modetype[m], "V:"+str(v).ljust(4," ")+"  A:"+str(a)+"m")
-        except:
-            error("E311", incoming)
+        if (incoming != "timeout"):
+
+            try:
+                v,a,m,p = incoming
+
+                update_display(modetype[m], "V:"+str(v).ljust(4," ")+"  A:"+str(a)+"m")
+                unable_check = False
+            except Exception as e:
+                unable_check = True
+                t = f"incoming: {incoming}, excpetion: {e}"
+                error("E311", t)
+                print(f"ex: {e}")
+                print(f"in: {incoming}")
+
+
+
+        elif (incoming == "timeout"):
+            # timeout detected
+            error("E309")
+            parkes_radio.reset_input_buffer()
+            parkes_radio.flush()
+            unable_check = True
+
+        elif (incoming == "unknown failure"):
+            error("E307")
+            unable_check = True
+
+        else:
+            error("E308")
+            unable_check = True
 
         if not demo:
             # not in demo mode, check for triggers to leave downlink
-            if m in exit_triggers:
-                error_code = "E99" + str(m)
-                error(error_code)
-                downlinking = False
+            if not unable_check:
+                # only check if appropriate packet
+                if m in exit_triggers:
+                    error_code = "E99" + str(m)
+                    error(error_code)
+                    downlinking = False
 
     # finished with flight, go to postflight
     lch_landed()
 
 def lch_landed():
-    # function to handle all postflight stuff
+    # function to handle any postflight stuff
     currently = "unused"
 
 
@@ -2415,7 +2487,7 @@ def cfg_errlog(data):
     # error log configuration functions
     global configuration
     if data == "init":
-        sys_file_init("parkes_errorlog.txt", "PARKES ERROR LOG", configuration["parkes_id"])
+        sys_file_init("errorlog.txt", "PARKES ERROR LOG", configuration["parkes_id"])
 
     elif data == "clear":
         new_file = open("parkes_errorlog.txt", "w")
