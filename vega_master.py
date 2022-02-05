@@ -2,16 +2,14 @@
 
 '''
     ==========================================================
-    Vega Flight Software, version 0.5
-    Copyright (C) 2021 Jack Woodman - All Rights Reserved
+    Vega Flight Software, version 0.6
+    Copyright (C) 2022 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
     * terms of the GNU GPLv3 license.
     ==========================================================
 '''
 
-# You're gonna want the bmp_functions stored in the same folder
-# https://github.com/jackwoodman/vega/blob/master/bmp_functions.py
 import Adafruit_BMP.BMP085 as BMP085
 import time
 import smbus
@@ -20,21 +18,37 @@ import math
 import threading
 import serial
 import copy
+import os
+from random import randint
 import csv
+import pave_comms
+import pave_graphics
+import numpy as np
+import RPi.GPIO as GPIO
+from filterpy.kalman import KalmanFilter
+from filterpy.common import Q_discrete_white_noise
 from picamera import PiCamera
 
 
-vega_version = 0.5
-internal_version = "0.5"
+vega_version = 0.6
+internal_version = "0.6.0"
 
-# The following assumes we only have an altimeter. Need to add config file support for dedicated accelerometer
+def sys_file_append(target_file, data):
+    # File appending tool, imported from VFS 0.3
+    opened_file = open(target_file, "a")
+    opened_file.write(data + "\n")
+    opened_file.close()
 
-#============RULES============
-# 1.) Function descriptions marked  |--- TO BE REMOVED ---| are only used for
-#     debug and dev purposes only. They will be archived on final release, so
-#     don't call the function anywhere else that is intended for final release.
-#=============================
+def sys_file_init(target_file, title, id="unavailable"):
+    # File creation tool, imported from VFS 0.3
+    top_line = f"========== {title} ==========\n"
+    bottom_line = "-" * len(top_line) + "\n"
+    new_file = open(target_file, "w")
+    new_file.write(top_line)
 
+    new_file.write(bottom_line)
+    new_file.write("")
+    new_file.close()
 
 # Look who hasn't learnt his lesson and is using global variables again
 global flight_data
@@ -45,6 +59,8 @@ import time
 # Configuration Values
 RUN_CAMERA = False
 COMP_ID = 0
+COMP_NAME = "vega flight system"
+
 
 flight_data = {}
 test_shit = {}
@@ -56,21 +72,30 @@ if RUN_CAMERA:
 configuration = {
     "beep_vol" : 5,
     "debug_mode" : True,
-    "rocket_data" : ["CALLISTO II", 3.5, 4]
+    "rocket_data" : {"name"       : "R2",
+                     "burn_time"  : 3.5,
+                     "deploy_time": 4,
+                     "max_accel"  : 15 }
 }
 
-
-
+# Default pin constants for GPIO
+#GPIO.setwarnings(False)
+#GPIO.setmode(GPIO.BOARD)
+GPIO_MATE = 99
+#GPIO.setup(GPIO_MATE, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
 #Constants
+LOG_FILENAME = "vega_flightlog.txt"
 VIDEO_FILENAME = "vega_onboard"
 VIDEO_SAVELOCATION = "/home/pi/Desktop/"
 X_OFFSET = 1.42
 RAW_AX_OFFSET = 21100
-FILE_VARS = ['time','altitude','velocity',
+AVIONICS_RUNTIME = 300
+FILE_VARS = ['time','altitude','velocity', 'kalman_velocity',
              'mode','gx','gy','gz','ax','ay','az','id']
 
 #MPU6050 Registers
+bus = smbus.SMBus(1)    #bus = smbus.SMBus(0) on older version boards
 PWR_MGMT_1   = 0x6B
 SMPLRT_DIV   = 0x19
 CONFIG       = 0x1A
@@ -82,29 +107,47 @@ ACCEL_ZOUT_H = 0x3F
 GYRO_XOUT_H  = 0x43
 GYRO_YOUT_H  = 0x45
 GYRO_ZOUT_H  = 0x47
-bus = smbus.SMBus(1)    # or bus = smbus.SMBus(0) for older version boards
-Device_Address = 0x68   # MPU6050 device address
+MPU_ADDRESS  = 0x68   # MPU6050 device address
+
+# define Kalman filter (https://filterpy.readthedocs.io/en/latest/kalman/KalmanFilter.html)
+K_f = KalmanFilter(dim_x=2, dim_z=1)
+
+
+def error(error_in, error_extra=""):
+    # converts parkes error to flight log
+    flight_logger(f"{error_in} - {error_extra}", duration())
+
+
+def check_mate():
+    # check for mating connection
+
+    if (GPIO.input(GPIO_MATE) == GPIO.LOW):
+        return True
+
+    return False
+
 
 
 
 def MPU_Init():
-        # Comments to explain this functino are in imutest.py
-        bus.write_byte_data(Device_Address, SMPLRT_DIV, 7)
-        bus.write_byte_data(Device_Address, PWR_MGMT_1, 1)
-        bus.write_byte_data(Device_Address, CONFIG, 0)
-        bus.write_byte_data(Device_Address, GYRO_CONFIG, 24)
-        bus.write_byte_data(Device_Address, INT_ENABLE, 1)
+        # Comments to explain this function are in imutest.py
+        bus.write_byte_data(MPU_ADDRESS, SMPLRT_DIV, 7)
+        bus.write_byte_data(MPU_ADDRESS, PWR_MGMT_1, 1)
+        bus.write_byte_data(MPU_ADDRESS, CONFIG, 0)
+        bus.write_byte_data(MPU_ADDRESS, GYRO_CONFIG, 24)
+        bus.write_byte_data(MPU_ADDRESS, INT_ENABLE, 1)
 
-def read_raw_data(addr):
+def read_raw_data(high_address):
         # Reads data from addresses of MPU
-        high = bus.read_byte_data(Device_Address, addr)
-        low = bus.read_byte_data(Device_Address, addr+1)
+        low_address = high_address + 1
+        high = bus.read_byte_data(MPU_ADDRESS, high_address)
+        low = bus.read_byte_data(MPU_ADDRESS, low_address)
 
         #concatenate higher and lower value
         value = ((high << 8) | low)
 
         #to get signed value from mpu6050
-        if(value > 32768):
+        if value > 32768:
                 value = value - 65536
         return value
 
@@ -121,22 +164,6 @@ def get_alt():
 
 def get_press_sea():
         return bmp_sensor.read_sealevel_pressure()
-
-""" The RPI needs an internet connection to keep time. Since the rocket won't
-    be able to keep an internect connection, I'm going to have to make my own
-    shitty timer. The issue: I'm going to use multi-threading to do this. Is
-    that bad? Very. Will it work?
-
-    UPDATE
-    Guess what. I lied. Totally can work on its own, just can't get an accurate start time.
-    That was a monumental waste of time. The homemade time functions are saved in the local
-    backup of vega in case I'm wrong twice over.
-
-    DOUBLE UPDATE
-    I think I deleted the local backup of vega. There's a chance Time Machine
-    has a backup from when it was being worked on on the Mac but otherwise
-    the homemade time functions are gone. Good riddence.
-    """
 
 
 global error_log
@@ -157,16 +184,26 @@ def file_init(target_file, title):
     bottom_line = "=" * (len(top_line)-1) + "\n"
     new_file = open(target_file, "w")
     new_file.write(top_line)
-    new_file.write("VEGA v" + str(vega_version)+"\n")
+    new_file.write("VEGA v" + str(vega_version) + " / "+internal_version+"\n")
     new_file.write(bottom_line)
     new_file.write(" \n")
     new_file.close()
 
+def flight_log_update(f_log):
+    #print("DEBUG: UPDATING LOG")
+    log_file = open(LOG_FILENAME, "a")
+
+    for data in f_log:
+        log_file.write(str(data) + "\n")
+
+    log_file.close()
+
+
+
 def flight_log_unload(flight_log, done=True):
     # VFS Flight Log Unloader Tool
-    flight_log_title = "vega_flightlog.txt"
-    file_init(flight_log_title, "VEGA FLIGHT LOG")
-    log_file = open(flight_log_title, "a")
+    log_file = open(LOG_FILENAME, "a")
+    print("DEBUG: LOADING TO LOG")
 
     for tuple in flight_log:
         log, timestamp = tuple
@@ -190,31 +227,39 @@ def error_unload(error_list):
 
 def data_unload(data_output, variable_list=FILE_VARS):
     #Creates a new csv file and stores the input within
+    file_code = randint(0, 100)
+    f_name = f"data_log_{file_code}.csv"
+    title = os.path.join("/home/pi/Flight_Data",f_name)
 
 
-    with open('flight_data.csv', 'w', newline='') as file:
+    with open(title, 'w', newline='') as file:
 
         # Initialise csv writer
         writer = csv.writer(file)
 
         # Write header line with column names
         writer.writerow(variable_list)
+        unlisted_var_count = len(variable_list) - 7
+        gyro_index = unlisted_var_count
+        accel_index = gyro_index + 1
 
         # For every packet in the input, compile and write a line
         # to the csv file
+        if not data_output:
+            return
 
         for entry in data_output:
 
             new_line = []
 
             # Build list of gyro and acc values from input
-            gyro_vals = [entry[4]["Gx"], entry[4]["Gy"], entry[4]["Gz"]]
-            acel_vals = [entry[5]["Ax"], entry[5]["Ay"], entry[5]["Az"]]
+            gyro_vals = [entry[gyro_index]["Gx"], entry[gyro_index]["Gy"], entry[gyro_index]["Gz"]]
+            acel_vals = [entry[accel_index]["Ax"], entry[accel_index]["Ay"], entry[accel_index]["Az"]]
 
 
 
             # Add first unlisted variables
-            for first in range(4):
+            for first in range(unlisted_var_count):
                 new_line.append(str(entry[first]))
 
             # Add gyoscope measurments
@@ -226,18 +271,29 @@ def data_unload(data_output, variable_list=FILE_VARS):
                 new_line.append(acel_vals[a_index])
 
             # Finally add packet ID
-            new_line.append(entry[6])
+            new_line.append(entry[unlisted_var_count + 2])
 
             # Write the new input line to the csv file
             writer.writerow(new_line)
+            print("-",new_line)
 
 
+def checkComputer(command_p, computer_id):
+    if (len(str(command_p)) == 5):
+        if (str(command_p)[0] == str(computer_id)):
+            return True
 
+    else:
+        return checkComputer(str(command_p).zfill(5), computer_id)
 
-def flight_logger(event, time):
+    return False
+
+def flight_logger(event, time=0):
     global flight_log
 
     new_log = (event, time)
+    print(f" - {new_log[0]}")
+    sys_file_append("debug.txt", str(new_log))
     flight_log.append(new_log)
 
 
@@ -248,7 +304,7 @@ def error_logger(error_code, time):
     error_log.append(new_error)
 
 def duration():
-    """ Returns current change in time"""
+    # Returns current change in time
     return format(time.time() - init_time, '.2f')
 
 def flight_time(launch_time):
@@ -256,9 +312,10 @@ def flight_time(launch_time):
 
 def estimate_velocity():
     global flight_data
-    flight_data["velocity"] = 0
-    last_r = 0
-    """ Finds a poor estimate for velocity in increments of 0.5 seconds"""
+    flight_data["velocity"], last_r = 0, 0
+    flight_logger("- VEST startup complete", duration())
+
+    # Finds a poor estimate for velocity in increments of 0.5 seconds
     while flight_data["avionics_loop"]:
             init_alt = bmp_sensor.read_altitude()
             sleep(0.5)
@@ -268,10 +325,13 @@ def estimate_velocity():
                 last_r = delta_y
             sleep(0.08)
 
+    flight_logger("- closing VEST thread", duration())
+
 def run_MPU():
-    """ Logs acceleration and gyroscope data """
+    # Logs acceleration and gyroscope data
 
     MPU_Init()    # Setup MPU6050
+    flight_logger("- MPU startup complete", duration())
     global flight_data
     flight_data["accel"] = {
         "Ax" : 0,
@@ -292,8 +352,9 @@ def run_MPU():
             acc_y = read_raw_data(ACCEL_YOUT_H)
             acc_z = read_raw_data(ACCEL_ZOUT_H)
 
-            if acc_x < -10000:
+            if (acc_x < -10000):
                 acc_x /= 2
+
             acc_x += RAW_AX_OFFSET
 
             #print("X DATA = " + str(acc_x) + " Z DATA = " + str(acc_z))
@@ -303,46 +364,57 @@ def run_MPU():
             gyro_y = read_raw_data(GYRO_YOUT_H)
             gyro_z = read_raw_data(GYRO_ZOUT_H)
 
+            ACC_DIVISOR = 16384.0
+            GYRO_DIVISOR = 131.0
+
             #Full scale range +/- 250 degree/C as per sensitivity scale factor
-            flight_data["accel"]["Ax"] = acc_x/16384.0
-            flight_data["accel"]["Ay"] = acc_y/16384.0
-            flight_data["accel"]["Az"] = acc_z/16384.0
+            flight_data["accel"]["Ax"] = acc_x / ACC_DIVISOR
+            flight_data["accel"]["Ay"] = acc_y / ACC_DIVISOR
+            flight_data["accel"]["Az"] = acc_z / ACC_DIVISOR
 
-            flight_data["gyro"]["Gx"] = gyro_x/131.0
-            flight_data["gyro"]["Gy"] = gyro_y/131.0
-            flight_data["gyro"]["Gz"] = gyro_z/131.0
-
-
-
-
-
-
+            flight_data["gyro"]["Gx"] = gyro_x / GYRO_DIVISOR
+            flight_data["gyro"]["Gy"] = gyro_y / GYRO_DIVISOR
+            flight_data["gyro"]["Gz"] = gyro_z / GYRO_DIVISOR
 
             sleep(0.1)
-def show_data():
-    global flight_data
-    print(flight_data["gyro"])
 
+    flight_logger("- closing MPU thread", duration())
 
-def altitude():
-    global flight_data
-    """ Logs current alt to flight_data"""
-    flight_data["altitude"] = get_alt()
 
 def flight_status():
     global flight_data
+    didUpdate = False
+
+    flight_logger("- Status Watchdog startup complete", duration())
     while flight_data["avionics_loop"]:
-        status = ""
-        start_alt = get_alt()
-        sleep(5)
-        if get_alt() > start_alt:
+        start_alt, status = get_alt(), ""
+        old_status = status
+        BUFFER = 8
+
+        sleep(3.5)
+
+        # positive difference
+        if (get_alt() > start_alt):
+            didUpdate = True
             status = 0
-        elif get_alt() < start_alt:
+
+        # negative difference
+        elif (get_alt() < start_alt - BUFFER):
+            didUpdate = True
             status = 1
-        elif abs(get_alt() - start_alt) < 4:
+
+        # less than difference
+        elif (abs(get_alt() - start_alt) < 4 ):
+            didUpdate = True
             status = 2
 
+        if (didUpdate):
+            didUpdate = False
+            #flight_logger(f"status update detected: {old_status} -> {status}", duration())
+
         flight_data["status"] = status
+
+    flight_logger("- closing Status Watchdog thread", duration())
 
 
 
@@ -361,20 +433,12 @@ def mpu_start():
     mpu_thread = threading.Thread(target=run_MPU)
     mpu_thread.start()
 
-
-
 def alt_start():
     altitude_thread = threading.Thread(target=altitude)
     altitude_thread.start()
 
 
 # Flight functions
-
-def auto_sequence():
-    v, a, m, p = "00000", "0000", "0", "20000"
-    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
-    vega_radio.write(command.encode())
-    armed()
 
 def pre_flight():
     return True
@@ -408,18 +472,48 @@ def stop_recording(filename=VIDEO_FILENAME, savelocation=VIDEO_SAVELOCATION):
     except:
         flight_logger("unable to stop recording, unknown error", duration())
 
+def reject_outliers(data, m = 2.):
+    d = np.abs(data - np.median(data))
+    mdev = np.median(d)
+    s = d/mdev if mdev else 0.
+    return data[s<m]
+
+
+def getPastAltitude(current_time, second_ago, flight_data):
+    # function to return altitude at (current_time - second_ago)
+
+    target_time = current_time - second_ago
+
+    for entry in flight_data[::-1]:
+     entry_time = entry[0]
+
+     if (entry_time > target_time):
+         return entry[1]
+
+def isAscending(current_time, current_alt, flight_data):
+
+    TIME_DELTA = 2 # seconds ago to check
+
+    past_alt = getPastAltitude(current_time, TIME_DELTA, flight_data)
+
+    if (past_alt < current_alt):
+        return True # rocket is ascending
+
+    return False    # rocket not ascending
+
 
 def armed():
     global configuration
     global flight_log
     global error_log
     # Confirm received:
-    v, a, m, p = "00000", "0000", "0", "20000"
+    sleep(1)
+    v, a, m, p = "21000", "0000", "0", "20000"
     command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
     vega_radio.write(command.encode())
 
 
-    flight_logger("armed() initated", duration())
+    flight_logger("-> armed() initated", duration())
     # Update parkes
 
     flight_logger("armed_alt: " + str(get_alt()), duration())
@@ -439,7 +533,8 @@ def armed():
 
     if launch_poll == True:
         # send vega is ready
-        v, a, m, p = "00000", "0000", "1", "20000"
+        sleep(1)
+        v, a, m, p = "20202", "0", "1", "20202"
         command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
         vega_radio.write(command.encode())
         flight_logger("poll result: GO", duration())
@@ -451,13 +546,16 @@ def armed():
         flight_logger("poll result: NO GO", duration())
         flight_logger("go_launch() returned: "+ launch_poll, duration())
         error_logger("Exxx")
+        flight_log_unload(flight_log, True)
+        error_unload(error_log)
+        return
 
 
-    flight_log_unload(flight_log, False)
+    flight_log_update(flight_log)
     flight_log = []
     sleep(1)
 
-    if RUN_CAMERA:
+    if (RUN_CAMERA):
         start_recording()
 
     flight_data["avionics_loop"] = True    # Allows avionics capture
@@ -467,95 +565,257 @@ def armed():
     mpu_start()
     flight_logger("all multithreads succesful", duration())
     flight_data["flight_record"] = []
+
+    # enters flight loop
     flight_data["flight_record"] = flight(calibrated_alt, calibrated_acc)
 
     data_unload(flight_data["flight_record"])
     if RUN_CAMERA:
         stop_recording()
 
-    flight_log_unload(flight_log, True)
     error_unload(error_log)
 
 
+def list_avg(array):
+    sum = 0
 
+    count = len(array)
+    for element in array:
+        sum += element
+    return sum/count
+
+def sanity_check(currentAlt, avg):
+    # returns whether acceleration data should be stored or not
+
+    # accel value would exceed expected max
+    if (abs(currentAlt - list_avg(avg)) > configuration["rocket_data"]["max_accel"]):
+        return False
+    elif (currentAlt < -5):
+        return False
+
+    return True
+
+
+def vamp_destruct(vamp):
+    # Breaks vamp into tuple of values
+    vamp_decom = []
+    for element in vamp.split("_"):
+        vamp_decom.append(element[1:])
+
+    try:
+        v, a, m, p = vamp_decom
+        vamp = (floor(float(v)), floor(float(a)), int(m), int(p))
+    except:
+        print(f"vamp error {vamp} ")
+
+    return vamp
 
 # Data structure = [timestamp, altitude, velocity, data id]
 def flight(calib_alt, calib_acc):
     global configuration
-    flight_logger("flight() initated", duration())
+    flight_logger("-> flight() initated", duration())
     # This function is the main flight loop. Let's keep things light boys
     global flight_data
+
+    # set flight variables
     flight_data["state"] = "flight"
     flight_data["status"] = 2
     data_store = []
     data_id = 0
-    recent_command = "v10000_a1000_m8_p1"
-    burn_time = configuration["rocket_data"][1]
-    deploy_time = burn_time + configuration["rocket_data"][2]
+    hold = True
+    file_init(LOG_FILENAME, "VEGA FLIGHT LOG")
+    flight_logger("Flight log initialised")
+    recent_vamp = pave_comms.vamp_compile(10000, 1000, 8, 1)
+
+    flight_logger("flight variables set", duration())
+
+
+    # time delays for this rocket
+    burn_time = configuration["rocket_data"]["burn_time"]
+    deploy_time = burn_time + configuration["rocket_data"]["deploy_time"]
+
+    # altitude defaults
     last_a = bmp_sensor.read_altitude() - calib_alt
+    running_avg = [last_a, last_a, last_a, last_a, last_a]
+
+
+    flight_logger("Initialising Kalman Filter", duration())
+    # initialise kalman state values
+    K_f.x = np.array([last_a, 0.0])
+
+    # state transition
+    K_f.F = np.array([[1.0, 1.0],
+                     [0.0, 1.0]])
+
+    # observation model
+    K_f.H = np.array([[1.0, 0.0]])
+
+    # covariance matrix
+    K_f.P = np.array([[1000.0, 0.0],
+                      [0.0, 1000.0]])
+
+    # covariance of observation noise
+    K_f.R = np.array([[5.0]])
+
+    # covariance of process noise
+    K_f.Q = Q_discrete_white_noise(dim=2, dt=0.1, var=0.13)
+
+
+    flight_logger("Kalman Filter ready", duration())
+    flight_logger("holding for ignition", duration())
+
+    hold_start = time.time()
+    while hold:
+        loop_time = time.time()
+        # get confirmation
+        new_command = improved_receive()
+
+        # if command is not nonetype
+        if new_command:
+            if (vamp_destruct(new_command)[2] == 9):
+                # check for epoch confirmation to parkes
+                flight_logger(f"ignition detected! - {new_command}", duration())
+                hold = False
+                break
+        else:
+            flight_logger("no command available (L611)", duration())
+
+        if (loop_time - hold_start > 10):
+            # waited for more than 30 seconds
+            flight_logger("hold timeout", duration())
+            return
+
+
     # Timekeeping
     flight_logger("switching to flight time", duration())
     launch_time = time.time()
     flight_logger("flight() loop entered", flight_time(launch_time))
+    sleep(1)
 
-    # THIS IS WHERE THE LAUNCH COMMAND GOES
-    v, a, m, p = "00000", "0000", "2", "20000"
-    command = "v"+v+"_a"+a+"_m"+m+"_p"+p+"\n"
-    vega_radio.write(command.encode())
+
+    preloop_time = time.time()
+    count = 0
+    command = ""
+
 
     # Flight Loop
+    while (True):
 
-    test_time = time.time()
-    count = 0
-    while 1:
-        count += 1
-        #data_store.append((flight_data["current_time"], data_id))
-        current_mode = "m2"
-        v, a, m, p = flight_data["velocity"], (bmp_sensor.read_altitude() - calib_alt), current_mode, data_id
-        g, c = flight_data["gyro"], flight_data["accel"]
-        new_data = [flight_time(launch_time), a, v, m, g, c, p]
+        # assign timestamp to loop
+        current_time = flight_time(launch_time)
+
+        # increment loop count and set initial altitude
+        loop_count += 1
+        initial_alt = (bmp_sensor.read_altitude() - calib_alt)
+
+        # run prediction for Kalman filter
+        K_f.predict()
+
+        # assign predictions
+        alt_prediction = K_f.x[0]
+        vel_prediction = K_f.x[1]
+
+        # calculated velocity assignment
+        vel_calculated = flight_data["velocity"]
+
+        # check value is within expected range
+        if (sanity_check(initial_alt, running_avg)):
+
+            # update kalman filter with new reading
+            new_altitude = math.floor(initial_alt)
+            K_f.update(new_altitude)
+
+            # get altitude and velocity from kalman filter
+            alt_kalman = K_f.x[0]
+            vel_kalman = K_f.x[1]
+
+            # update running average with new altitude
+            running_avg.pop(0)
+            running_avg.append(alt_kalman)
+
+            # update most recent 'good' altitude
+            last_alt = alt_kalman
+
+            # build vamp using most recent data and save vamp
+            vamp = pave_comms.vamp_compile(vel_kalman, alt_kalman, current_mode, data_id)
+            recent_vamp = vamp
+
+            # send vamp
+            pave_comms.send(vamp, vega_radio)
+
+            # decide on final data values
+            vel = vel_kalman
+            alt = alt_kalman
+
+        else:
+            # sanity check failed, use prediction of what data *may* have been
+            last_alt = alt_prediction
+
+            # decide on final data values
+            vel = vel_prediction
+            alt = alt_prediction
+
+
+        # update data store in format [t, a_k, v_c, v_k, m, gyro, accel, p]
+        new_data = [current_time, alt, vel_calculated, vel, current_mode,
+                    flight_data["gyro"], flight_data["accel"], data_id]
+
         data_store.append(copy.deepcopy(new_data))
 
 
-
-        if abs(a - last_a) < 100 and a > 0:
-            command = str("v"+str(round(v, 4)).zfill(5)+"_a"+str(round(a, 4)).zfill(4)+"_"+str(m)+"_p"+str(p).zfill(5)+"\n")
-            sleep(0.1)
-            vega_radio.write(command.encode())
-            if command:
-                print("this one")
-                print(command)
-            recent_command = command
-        else:
-            if command:
-                vega_radio.write(recent_command.encode())
-                error_logger("E010", flight_time(launch_time))
-
+        # keep track of generated data packets
         data_id += 1
-        if float(flight_time(launch_time)) > burn_time + 1:
-            current_mode = "m3"
 
-        if flight_data["status"] == 1:
-            current_mode = "m4"
 
-        if float(flight_time(launch_time)) > deploy_time + 1:
-            current_mode = "m5"
+        # --- flight status detection ---
+        mode_data = (new_data[1], data_store)
+        current_mode = determineMode(current_mode, current_time, calib_alt, mode_data)
 
-        if abs(get_alt() - calib_alt) < 5:
-            if flight_data["status"] == 2:
-                current_mode = "m6"
 
-        delay_time = time.time() - test_time
+        # --- check for loop end ---
+        elapsed_time = current_time - preloop_time
 
-        if delay_time > 30:
-            print("done")
+        if (elapsed_time > AVIONICS_RUNTIME):
+            # exhausted recording limit, end avionics loop
+            flight_logger("avionics runtime met", duration())
+
+            # tell parkes to end downlink
+            kill_loop = pave_comms.vamp_compile(10000, 1000, 6, 20000)
+            pave_comms.send(kill_loop, vega_radio)
+
+            # kill avonics loops and merge threads
             flight_data["avionics_loop"] = False
 
+            # compile flight log
+            flight_log_update(flight_log)
+
+            # return data and end flight loop
             return data_store
-            break
 
-        sleep(0.1)
+        sleep(0.02)
 
+def determineMode(current_mode, current_time, calib_alt, data):
+    mode = current_mode
+
+    # detect unpowered flight
+    if (float(current_time) > (burn_time + 1)):
+        mode = "m3"
+
+    # detect apogee
+    if not (isAscending(current_time, data[0], data[1])):
+        flight_logger(f"apogee detected!", current_time)
+        mode = "m4"
+
+    # detect parachute descent
+    if (float(current_time) > deploy_time + 1) and (current_mode == "m4"):
+        mode = "m5"
+
+    # detect landed and safe
+    if (abs(data[0] - calib_alt) < 5):
+            mode = "m6"
+
+
+    return mode
 
 def bmp_debug():
     # --- TO BE REMOVED ---
@@ -600,12 +860,11 @@ def demo_loop():
 
         sleep(0.1)
 
-
-
-
 def open_port():
     global vega_radio
     # Opens the default port for Vega transceiver
+    flight_logger("opened port - vega_radio", duration())
+
     vega_radio = serial.Serial(
         port = "/dev/serial0",
         baudrate = 9600,
@@ -615,6 +874,7 @@ def open_port():
 
         # You might need a timeout here if it doesn't work, try a timeout of 1 sec
         )
+
 def send(vamp):
     # Sends command over radio
     try:
@@ -628,9 +888,39 @@ def receive():
     # Listens for a vamp from Vega. Simples
     data = vega_radio.read_until()
     to_return = data
-    to_return = to_return.decode()
+    try:
+        to_return = to_return.decode()
+    except:
+        print("Unable to decode - " + to_return)
     return to_return
 
+def improved_receive(override_timeout=False, timeout_set=5):
+    # Receives for command from vega_radio - waits indefinitely
+    # unless timeout is specified
+
+    if override_timeout:
+        vega_radio.timeout = timeout_set
+        data = vega_radio.read_until()
+        to_return = data
+        to_return = to_return.decode()
+        vamp_decom = []
+        vega_radio.timeout = None
+        for element in to_return.split("_"):
+            vamp_decom.append(element[1:])
+        try:
+            v, a, m, p = vamp_decom
+            vamp = (floor(float(v)), floor(float(a)), int(m), int(p))
+            return to_return
+        except:
+            flight_logger("- Timeout detected - " + str(vamp_decom), duration())
+            return "timeout"
+
+    # Listens for a vamp from parkes. Simples
+    data = vega_radio.read_until()
+    to_return = data
+    to_return = to_return.decode()
+
+    return to_return
 
 def vamp_destruct(vamp):
     vamp_decom = []
@@ -639,25 +929,31 @@ def vamp_destruct(vamp):
 
     try:
         v, a, m, p = vamp_decom
+        vamp = (int(v), int(a), int(m), int(p))
     except:
-        error("E120")
-    vamp = (int(v), int(a), int(m), int(p))
+        flight_logger("Error: vamp overload, handling", duration())
+        vamp = (0, 0, 0, 0)
+
 
     return vamp
 
 def set_beep(value):
     global configuration
+    flight_logger(f"beep_vol set to {value}", duration())
     configuration["beep_vol"] = int(value)
 
 def set_debug(value):
     global configuration
+
     try:
         if value == "True":
             configuration["debug_mode"] = True
         else:
             configuration["debug_mode"] = False
+        flight_logger(f"debug mode set to {value}", duration())
         return True
     except:
+        flight_logger(f"debug could not be set to {value}", duration())
         return False
 
 def config_update(data):
@@ -672,6 +968,17 @@ def config_update(data):
 
     except:
         return False
+
+def show_gyro():
+    global flight_data
+    print(flight_data["gyro"])
+
+
+def altitude():
+    global flight_data
+    # Logs current alt to flight_data"""
+    flight_logger("- BMP startup complete", duration())
+    flight_data["altitude"] = get_alt()
 
 
 def receive_config():
@@ -714,7 +1021,7 @@ def heartbeat():
 
         vega_radio.write(to_send.encode())
         sleep(0.6)
-        print("Heartbeat Away... (" +str(beat)+") ("+to_send+")")
+        print("Heartbeat Away... (" +str(beat)+") ("+to_send[:-1]+")")
         beat += 1
         check_kill = ""
         check_kill = vega_radio.read_until().decode()
@@ -738,9 +1045,15 @@ def heartbeat_init():
     heartbeat()
 
 def force_launch():
+    global flight_data
     flight_logger("FORCING LAUNCH", duration())
-    flight_logger("LAUNCH DETCTED", duration())
+    flight_data["avionics_loop"] = True
+    flight_logger("Avionics loop is active", duration())
+    mpu_start()
+    flight_logger("MPU is active", duration())
     vel_start()
+    flight_logger("BMP is active")
+    flight_logger("GO FOR FORCED LAUNCH", duration())
     flight(get_alt(), 0)
 
 def compile_logs():
@@ -749,17 +1062,18 @@ def compile_logs():
     error_unload(error_log)
     sleep(1)
 
-
-
-
+sys_file_init("debug.txt", "DEBUG FILE")
 
 # STARTUP
 init_time = time.time()
-flight_logger("vega flight system - startup", duration())
-flight_logger("initialising vfs - verison: " + str(vega_version), duration())
+pave_graphics.startupDisplay(COMP_NAME, vega_version, internal_version)
+flight_logger(f"startup", duration())
+flight_logger("initialising vfs", duration())
 open_port()
 time.sleep(1)
 flight_logger("port open", duration())
+
+flight_logger("setup complete", duration())
 
 command_dict = {
     0 : arm,
@@ -771,7 +1085,6 @@ command_dict = {
 }
 
 while receiving_command:
-    print("RECEIVING COMMAND...")
     flight_logger("RECEIVING COMMAND...", duration())
 
     new_command = vamp_destruct(receive())
@@ -779,19 +1092,23 @@ while receiving_command:
 
     target_program = new_command[2]
     target_comp = int(str(new_command[3])[0])
-    if __name__ == "__main__":
-        try:
-            # Check vega was the intended target
-            if int(target_comp) == COMP_ID:
-                command_dict[target_program]()
-            else:
-                flight_logger("command detected - not for Vega", duration())
-                print("Comp id = " + str(COMP_ID) +", Target id = " + str(target_comp))
 
-        except KeyboardInterrupt:
-            flight_logger("KeyboardInterrupt detected", duration())
-            flight_logger("port closed", duration())
-            compile_logs()
+    try:
+        # Check vega was the intended target
+        if (checkComputer(target_comp, COMP_ID)):
+            flight_logger(f"command [{target_program}] detected for vega", duration())
+            command_dict[target_program]()
+        else:
+
+            intended_comp = ("Parkes" if target_comp == 2 else "Epoch")
+            flight_logger("VEGA ID = " + str(COMP_ID) +", TARGET ID = " + str(target_comp))
+            flight_logger(f"command detected - intended for {intended_comp}, not Vega"+"\n", duration())
+
+    except KeyboardInterrupt:
+        flight_logger("KeyboardInterrupt detected", duration())
+        vega_radio.close()
+        flight_logger("port closed", duration())
+        compile_logs()
 
 
       # do noth
