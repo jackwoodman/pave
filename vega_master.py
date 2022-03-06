@@ -1,5 +1,8 @@
 #vfs
 
+# requires pave_comms.py (beta 1 and up)
+# requires pave_file.py (beta 1 and up)
+
 '''
     ==========================================================
     Vega Flight Software, version 0.6
@@ -9,6 +12,7 @@
     * terms of the GNU GPLv3 license.
     ==========================================================
 '''
+
 
 import Adafruit_BMP.BMP085 as BMP085
 import time
@@ -31,24 +35,9 @@ from picamera import PiCamera
 
 
 vega_version = 0.6
-internal_version = "0.6.0"
+internal_version = "0.6.1"
 
-def sys_file_append(target_file, data):
-    # File appending tool, imported from VFS 0.3
-    opened_file = open(target_file, "a")
-    opened_file.write(data + "\n")
-    opened_file.close()
-
-def sys_file_init(target_file, title, id="unavailable"):
-    # File creation tool, imported from VFS 0.3
-    top_line = f"========== {title} ==========\n"
-    bottom_line = "-" * len(top_line) + "\n"
-    new_file = open(target_file, "w")
-    new_file.write(top_line)
-
-    new_file.write(bottom_line)
-    new_file.write("")
-    new_file.close()
+#=============================
 
 # Look who hasn't learnt his lesson and is using global variables again
 global flight_data
@@ -59,7 +48,7 @@ import time
 # Configuration Values
 RUN_CAMERA = False
 COMP_ID = 0
-COMP_NAME = "vega flight system"
+COMP_NAME = "vega flight software"
 
 
 flight_data = {}
@@ -215,7 +204,7 @@ def flight_log_unload(flight_log, done=True):
 
 def error_unload(error_list):
     error_log_title = "vega_errorlog.txt"
-    file_init(error_log_title, "VEGA ERROR LOG")
+    pave_file.create(error_log_title, "VEGA ERROR LOG", "Vega", internal_version)
 
     error_file = open(error_log_title, "a")
 
@@ -280,10 +269,15 @@ def data_unload(data_output, variable_list=FILE_VARS):
 
 def checkComputer(command_p, computer_id):
     if (len(str(command_p)) == 5):
-        if (str(command_p)[0] == str(computer_id)):
+        command_id = str(command_p)[0]
+        computer_id = str(computer_id)
+
+        if (command_id == computer_id):
+            print(f"DEBUG: {command_id} = {computer_id}")
             return True
 
     else:
+        print(f"DEBUG: {command_p}")
         return checkComputer(str(command_p).zfill(5), computer_id)
 
     return False
@@ -293,7 +287,7 @@ def flight_logger(event, time=0):
 
     new_log = (event, time)
     print(f" - {new_log[0]}")
-    sys_file_append("debug.txt", str(new_log))
+    pave_file.append("debug.txt", str(new_log))
     flight_log.append(new_log)
 
 
@@ -623,7 +617,9 @@ def flight(calib_alt, calib_acc):
     data_store = []
     data_id = 0
     hold = True
-    file_init(LOG_FILENAME, "VEGA FLIGHT LOG")
+
+    pave_file.create(LOG_FILENAME, "VEGA FLIGHT LOG", "Vega", internal_version)
+
     flight_logger("Flight log initialised")
     recent_vamp = pave_comms.vamp_compile(10000, 1000, 8, 1)
 
@@ -1062,7 +1058,8 @@ def compile_logs():
     error_unload(error_log)
     sleep(1)
 
-sys_file_init("debug.txt", "DEBUG FILE")
+pave_file.create("debug.txt", "DEBUG FILE", "Vega", internal_version)
+
 
 # STARTUP
 init_time = time.time()
@@ -1095,7 +1092,7 @@ while receiving_command:
 
     try:
         # Check vega was the intended target
-        if (checkComputer(target_comp, COMP_ID)):
+        if (checkComputer(new_command[3], COMP_ID)):
             flight_logger(f"command [{target_program}] detected for vega", duration())
             command_dict[target_program]()
         else:
