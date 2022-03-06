@@ -1,7 +1,8 @@
 # pgs
-# internal verion 0.5.17
 
 # requires parkes_edecode.py (1.4 and up)
+# requires pave_comms.py (beta 1 and up)
+# requires pave_file.py (beta 1 and up)
 
 '''
     ==========================================================
@@ -22,6 +23,7 @@ import copy
 import filecmp
 import RPi.GPIO as GPIO
 import pave_comms
+import pave_file
 from math import floor
 from time import sleep
 from random import randint
@@ -36,7 +38,7 @@ hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = True
 parkes_version = 0.5
-internal_version = "0.5.23"
+internal_version = "0.5.26"
 
 
 # Constants
@@ -175,7 +177,6 @@ def sys_epoch_test(arm, ignition, amount):
             return 2
 
 
-
         target_program = final_command[2]
         target_comp = int(str(final_command[3])[0])
 
@@ -223,25 +224,6 @@ def sys_epoch_fire(arm, ignition):
     # unknown failure
     return 4
 
-
-def sys_file_append(target_file, data):
-    # File appending tool, imported from VFS 0.3
-    opened_file = open(target_file, "a")
-    opened_file.write(data + "\n")
-    opened_file.close()
-
-def sys_file_init(target_file, title, id="unavailable"):
-    # File creation tool, imported from VFS 0.3
-    top_line = f"========== {title} ==========\n"
-    bottom_line = "-" * len(top_line) + "\n"
-    new_file = open(target_file, "w")
-    new_file.write(top_line)
-    new_file.write("Software Version: " + str(internal_version) + "\n")
-    new_file.write("Parkes ID: " + str(id) + "\n")
-    new_file.write(bottom_line)
-    new_file.write("")
-    new_file.close()
-
 def dsp_scroll_tool(top_text, bottom_text):
     # allows to scroll through bottom text on display
     bottom_text += "  "
@@ -265,7 +247,7 @@ def dsp_scroll_tool(top_text, bottom_text):
         elif (last_input == "back"):
             break
 
-def sys_epoch_menu():
+def cne_epoch_menu():
     global configuration
 
     epoch_functions = {
@@ -434,7 +416,7 @@ def error(e_code, data=True, add_data=False):
 
         # display error in consol and add to errorlog
         print(new_error)
-        sys_file_append("errorlog.txt", new_error)
+        pave_file.append("errorlog.txt", new_error)
 
         #run associated error function
         error_type(e_code)
@@ -1076,7 +1058,7 @@ def cne_heartbeat():
     pave_comms.send(heartbeat_init_vamp, parkes_radio)
 
     hb_count = 0
-    if hb_count < 0:
+    if (hb_count < 0):
         error("E251")
         hb_count = 0
 
@@ -1099,6 +1081,7 @@ def cne_heartbeat():
             # find avg value of last AVG_SAMPLE sig strengths
             for i in range(AVG_SAMPLE):
                 avg += (hb_count / int(configuration["telemetry"]["hb_data"][-i][3]))
+
             avg /= AVG_SAMPLE
             configuration["telemetry"]["hb_sigstrn"] = avg
 
@@ -1123,7 +1106,6 @@ def cne_heartbeat_thread():
 
 def cne_compare_vamp(vamp_1, vamp_2):
     # return true if two vamps are equal
-
     for (e_1, e_2) in zip(vamp_1, vamp_2):
         if (str(e_1) != str(e_2)):
             return False
@@ -1164,13 +1146,13 @@ def cne_heartbeat_confirmation():
 
 def dsp_handshake(status):
     # Displays current handshake status in a fun and easy to read way kill me please
-    if status == False:
+    if (status == False):
         top_line = format_length("  NO CONNECTION ")
         bottom_line = format_length(" P ----/x/--- V ")
 
         update_display(top_line, bottom_line)
 
-    if status == True:
+    if (status == True):
         top_line = format_length("  CONNECTING  ")
         bottom_line = format_length(" P ---------- V ")
         update_display(top_line, bottom_line)
@@ -1511,21 +1493,40 @@ def cne_update():
     os.system("python3 parkes_master.py")
 
 
+def cne_parkes_menu():
+    global configuration
+
+    cne_parkes_dict = {
+        1 : ["STATUS", cne_status],
+        2 : ["OPEN PORT", cne_open_port],
+        3 : ["UPDATE", cne_update]
+    }
+
+    dsp_menu(cne_parkes_dict, "PARKES CNE")
+
+def cne_vega_menu():
+    global configuration
+
+    cne_vega_dict = {
+        1 : ["HANDSHAKE", cne_connect],
+        2 : ["HEARTBEAT", cne_hb_menu],
+        3 : ["VFS CONFIG", cne_vfs_menu]
+    }
+
+    dsp_menu(cne_vega_dict, "VEGA CNE")
+
 
 def sys_connect():
     global configuration
 
-    connect_func_dict = {
-        1 : ["HANDSHAKE", cne_connect],
-        2 : ["STATUS", cne_status],
-        3 : ["HEARTBEAT", cne_hb_menu],
-        4 : ["VFS CONFIG", cne_vfs_menu],
-        5 : ["UPDATE PGS", cne_update],
-        6 : ["PORT OPEN", cne_open_port],
-        7 : ["EPOCH", sys_epoch_menu]
-        }
+    connect_submen_dict = {
+        1 : ["PARKES", cne_parkes_menu],
+        2 : ["VEGA", cne_vega_menu],
+        3 : ["EPOCH", cne_epoch_menu]
+    }
 
-    dsp_menu(connect_func_dict, "CONNECT")
+    dsp_menu(connect_submen_dict, "CONNECT")
+
     # Exit to menu, don't write below here
 
 def sys_debug():
@@ -2086,17 +2087,6 @@ def lch_preflight_all():
         v_count += 1
 
 
-
-    # grab poll results from radio with timeout enabled
-    #epoch_poll_results = cne_vamp_destruct(cne_receive(override_timeout=True))
-    #
-    # if epoch_poll_results[3] == 11111:
-    #     error("E298", str(epoch_poll_results))
-    #
-    # else:
-    #
-    #     error("E296", str(epoch_poll_results))
-
     # calculate go counts and set final preflight status
     pass_count = v_count + e_count + p_count
     pf_stat = lch_status_compile(v_count, e_count, p_count)
@@ -2248,7 +2238,11 @@ def dsp_downlink(demo=False):
     global configuration
     flight_downlink = []
     error("E985")
+
+    # keep track of highest re corded altitude
     downlinking = True
+    max_altitude = 0
+
     modetype = {
         0 : " VEGA IDLE      ",
         1 : " ARMED & READY  ",
@@ -2273,7 +2267,8 @@ def dsp_downlink(demo=False):
 
             try:
                 v,a,m,p = incoming
-
+                if (a > max_altitude):
+                    max_altitude = a
                 update_display(modetype[m], "V:"+str(v).ljust(4," ")+"  A:"+str(a)+"m")
                 unable_check = False
             except Exception as e:
@@ -2310,11 +2305,13 @@ def dsp_downlink(demo=False):
                     downlinking = False
 
     # finished with flight, go to postflight
-    lch_landed()
+    lch_landed(max_altitude)
 
-def lch_landed():
+def lch_landed(m_alt):
     # function to handle any postflight stuff
-    currently = "unused"
+    confirm("FLIGHT ENDED")
+    confirm(f"MAX: {str(m_alt)}")
+    confirm(f"Ended Downlink")
 
 
 def sys_launch():
@@ -2487,7 +2484,7 @@ def cfg_errlog(data):
     # error log configuration functions
     global configuration
     if data == "init":
-        sys_file_init("errorlog.txt", "PARKES ERROR LOG", configuration["parkes_id"])
+        pave_file.create("errorlog.txt", "PARKES ERROR LOG", "Parkes", internal_version, id=configuration["parkes_id"])
 
     elif data == "clear":
         new_file = open("parkes_errorlog.txt", "w")
