@@ -1,5 +1,5 @@
 # pave
-Parkes Vega - or PAVE - is flight software in early development for avionics systems. 
+Parkes Vega Epoch (PAVE) - is flight software in early development for avionics systems. 
 Short term goals include:
   - Flight data recording
   - Avionics data logging
@@ -26,4 +26,3 @@ Epoch Launch Software:
 
 Codebases are shared between systems where possible, with system management and radio communication protocols identical between the three.
 
-Repl.it -> [![Run on Repl.it](https://repl.it/badge/github/jackwoodman/vega)](https://repl.it/github/jackwoodman/vega)
