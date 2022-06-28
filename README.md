@@ -29,7 +29,7 @@ Codebases are shared between systems where possible, with system management and 
 # Hardware Implementation
 - Parkes is run on a Raspberry Pi 3, with LCD and buttons/switches/LEDs for interaction.
 - Vega is run on a Raspberry Pi Zero, with an MPU6050 for gyro/accel, BMP180 for alt., and Pi Camera for video.
-- Epoch is run on a Raspberry Pi Zero, with three 5V Gravity Relauys for ignition control and red and green lamps for status updates
+- Epoch is run on a Raspberry Pi Zero, with three 3.3V Gravity Relays for ignition control and red and green lamps for status updates
 - All three computers communicate using HC-12 radios.
 
 
