@@ -38,8 +38,6 @@ vega_version = 0.6
 internal_version = "0.6.1"
 
 #=============================
-
-# Look who hasn't learnt his lesson and is using global variables again
 global flight_data
 global data_store
 global configuration
@@ -203,6 +201,7 @@ def flight_log_unload(flight_log, done=True):
     log_file.close()
 
 def error_unload(error_list):
+    # at the end of flight/terminal event, save error list to errorlog file
     error_log_title = "vega_errorlog.txt"
     pave_file.create(error_log_title, "VEGA ERROR LOG", "Vega", internal_version)
 
@@ -215,7 +214,7 @@ def error_unload(error_list):
     error_file.close()
 
 def data_unload(data_output, variable_list=FILE_VARS):
-    #Creates a new csv file and stores the input within
+    # Creates a new csv file and stores the input within
     file_code = randint(0, 100)
     f_name = f"data_log_{file_code}.csv"
     title = os.path.join("/home/pi/Flight_Data",f_name)
@@ -268,6 +267,7 @@ def data_unload(data_output, variable_list=FILE_VARS):
 
 
 def checkComputer(command_p, computer_id):
+    # check that command was intended for given computer
     if (len(str(command_p)) == 5):
         command_id = str(command_p)[0]
         computer_id = str(computer_id)
@@ -283,6 +283,7 @@ def checkComputer(command_p, computer_id):
     return False
 
 def flight_logger(event, time=0):
+    # add event at given timestamp to flight log
     global flight_log
 
     new_log = (event, time)
@@ -292,6 +293,7 @@ def flight_logger(event, time=0):
 
 
 def error_logger(error_code, time):
+    # add error at given timestamp to error log
     global error_log
 
     new_error = (error_code, time)
