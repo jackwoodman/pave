@@ -6,7 +6,7 @@
 
 '''
     ==========================================================
-    Parkes Ground Software, version 0.5
+    Parkes Ground Software, version 0.6.5
     Copyright (C) 2022 Jack Woodman - All Rights Reserved
 
     * You may use, distribute and modify this code under the
@@ -16,20 +16,18 @@
 
 import os
 import time
+import copy
+import pave
 import random
 import serial
-import threading
-import copy
 import filecmp
-import RPi.GPIO as GPIO
-import pave_comms
-import pave_file
+import threading
 from math import floor
 from time import sleep
-from random import randint
-from datetime import datetime
+import RPi.GPIO as GPIO
 from RPLCD import CharLCD
 from parkes_edecode import error_decoder
+
 
 
 # hot_run defines whether Parkes will run using hardware or simulation.
@@ -37,8 +35,8 @@ global hot_run
 hot_run = True
 # tested keeps track of if the current version has been live tested
 tested = True
-parkes_version = 0.5
-internal_version = "0.5.26"
+parkes_version = 0.6
+internal_version = "0.6"
 
 
 # Constants
@@ -73,7 +71,6 @@ configuration = {
     "internal_vers" : internal_version
     }
 
-
 # Initial LCD Setup
 lcd = CharLCD(cols=16,
               rows=2,
@@ -100,17 +97,16 @@ GPIO.setup(GPIO_LIGHT, GPIO.OUT) # Light  - GPIO 17
 GPIO.setup(GPIO_LAMP, GPIO.OUT) # Notification Lamp Output - GPIO 16
 
 
-
 # System Functions
 
 def sys_main_status():
     # checks if shutdown flags are true, used within function loops
     reboot, kill = configuration["go_reboot"], configuration["go_kill"]
 
-    if reboot and not kill:
+    if (reboot and not kill):
         return "REBOOT"
 
-    elif not reboot and kill:
+    elif (not reboot and kill):
         return "KILL"
 
     else:
@@ -119,59 +115,51 @@ def sys_main_status():
 
 def sys_set_output(gpio_pin, status):
     # set output status
+    GPIO_SET = GPIO.HIGH if status else GPIO.LOW
+    GPIO.output(gpio_pin, GPIO_SET)
 
-    if status:
-        GPIO.output(gpio_pin, GPIO.HIGH)
-    else:
-        GPIO.output(GPIO_LIGHT, GPIO.LOW)
 
 def sys_check_status(gpio_pin):
     # check if input pin is pulled low or not
-    if GPIO.input(gpio_pin) == GPIO.LOW:
-        return True
-    else:
-        return False
+    return (GPIO.input(gpio_pin) == GPIO.LOW)
 
-def sys_check_launch():
-    # soon to be deprecated - don't use this for anything
-    if GPIO.input(GPIO_LAUNCH) == GPIO.LOW:
-        return True
-    else:
-        return False
+
+def sys_status_graphic(gpio_pin):
+    # return graphic to match gpio status
+    ON, OFF = ["X", " "]
+    return (ON if sys_check_status(gpio_pin) else OFF)
+
 
 def sys_check_cont():
     # originally from the days where parkes controlled ignition instead of
     # epoch. keeping here incase I work out how to do continuity check
     # with epoch - don't remove, as preflight checks poll this func
     continuity = True
-
     return continuity
 
 def sys_fire(arm, ignition):
     # Local ignition command, only for single engine fire
-    if arm and ignition:
+    if (arm and ignition):
         GPIO.output(GPIO_IGNITOR, GPIO.HIGH)
-        sleep(5)
+        sleep(configuration["ignition_duration"])
         GPIO.output(GPIO_IGNITOR, GPIO.LOW)
 
 
 def sys_epoch_test(arm, ignition, amount):
-
-
     # commands epoch to fire
-    if arm and ignition:
+    if (arm and ignition):
         # fire command
-        if amount == "single":
-            p = 30000
-        elif amount == "all":
-            p = 20000
+        reply = {
+            "single" : 30000,
+            "all"    : 20000
+        }
 
-        v, a, m = 00000, 2000, 1
-
-        pave_comms.send((v,a,m,p), parkes_radio)
+        # send fire commmand
+        vamp = (00000, 2000, 1, reply[amount])
+        pave.comms.send(vamp, parkes_radio)
 
         # get confirmation
-        final_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=5)
+        final_command = pave.comms.receive(parkes_radio, timeout=True, timeout_duration=5)
 
         if str(final_command) == "timeout":
             return 2
@@ -180,7 +168,7 @@ def sys_epoch_test(arm, ignition, amount):
         target_program = final_command[2]
         target_comp = int(str(final_command[3])[0])
 
-        if target_comp == COMP_ID and target_program == 9:
+        if (target_comp == COMP_ID and target_program == 9):
             return 1
         else:
             # epoch isn't ok to fire for whatever reason
@@ -190,15 +178,15 @@ def sys_epoch_test(arm, ignition, amount):
 def sys_epoch_fire(arm, ignition):
 
     # commands epoch to fire
-    if arm and ignition:
+    if (arm and ignition):
         # fire command
         fire_epoch = (10101, 2000, 1, 10000)
-        pave_comms.send(fire_epoch, parkes_radio)
+        pave.comms.send(fire_epoch, parkes_radio)
 
         # get confirmation
-        final_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=5)
+        final_command = pave.comms.receive(parkes_radio, timeout=True, timeout_duration=5)
 
-        if str(final_command) == "timeout":
+        if (str(final_command) == "timeout"):
             return 2
 
         target_program = get_vamp(final_command, "m")
@@ -206,16 +194,16 @@ def sys_epoch_fire(arm, ignition):
         confirmation_code = get_vamp(final_command, "v")
 
         if (target_comp == COMP_ID and target_program == 9):
-            if confirmation_code != 10101:
+            if (confirmation_code != 10101):
                 return 5
             return 1
         else:
             # epoch isn't ok to fire for whatever reason
             # TO-DO: sort reason from reason
-            print("FC="+str(final_command))
-            print("TP=" +str(target_program))
-            print("TC="+str(target_comp))
-            print("CI="+str(COMP_ID))
+            print("Final Command ="+str(final_command))
+            print("Target Program =" +str(target_program))
+            print("Target Computer ="+str(target_comp))
+            print("Computer ID ="+str(COMP_ID))
             return 0
     else:
         # parkes triggered last minute abort
@@ -260,14 +248,16 @@ def cne_epoch_menu():
     dsp_menu(epoch_functions, "EPOCH FUNCS")
 
 def epc_shutdown():
+    # command epoch to shut down
     epc_command(6)
 
 def epc_test_all():
+    # send fireall (test) command to epoch
     epc_command(2)
     confirm("TESTING...")
 
     # get confirmation
-    new_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=25)
+    new_command = pave.comms.receive(parkes_radio, timeout=True, timeout_duration=25)
 
     if str(new_command) == "timeout":
         error("E264")
@@ -275,28 +265,42 @@ def epc_test_all():
         confirm("TEST CONFIRMED")
 
 def epc_command(command_id):
+    # allowed commands
+    accepted = [0, 1, 2, 3, 4, 5, 6]
+    # open port if required
     if not (configuration["telemetry"]["port_open"]):
         cne_open_port(False)
+
+
+    # check command is actually allowed
+    if (command_id not in accepted):
+        error("E268", f"tried command: {command_id}", True)
+        return
+
+
+    # format vamp with required command_id and send
     epc_com = (00000, 2000, command_id, 10000)
-    pave_comms.send(epc_com, parkes_radio)
+    pave.comms.send(epc_com, parkes_radio)
+    error("E916", f"Sent command: {command_id}", True)
 
 def epc_test_single():
+    # send single fire command to epoch
     epc_command(3)
 
     confirm("TESTING...")
     # get confirmation
-    new_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=8)
+    new_command = pave.comms.receive(parkes_radio, timeout=True, timeout_duration=8)
     if str(new_command) == "timeout":
         error("E262")
     else:
         confirm("TEST CONFIRMED")
 
 def epc_echo():
+    # send echo command to epoch
     epc_command(0)
 
-
     # get confirmation
-    new_command = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=5)
+    new_command = pave.comms.receive(parkes_radio, timeout=True, timeout_duration=5)
     if str(new_command) == "timeout":
         error("E266", "unable to confirm test command received")
     else:
@@ -309,46 +313,36 @@ def dsp_vowel_remover(word):
     vowels, new_word, has_taken = ["a","e","i","o","u"], [], False
 
     for x in list(word)[::-1]:
-         if x not in vowels or has_taken:
+         if (x not in vowels or has_taken):
             new_word.append(x)
          else:
             has_taken = True
 
     to_return_word = "".join(new_word[::-1])
 
-    if to_return_word != word:
-        return to_return_word, True
-    else:
-        return to_return_word, False
+    return to_return_word, (to_return_word != word)
 
 # Parkes Error Handler 2.0
 #====================PEH 2.0====================#
 def dsp_error_nonfatal(code):
+    reboot_txt, shutdown_txt ="|RBT| / SHUTDWN ",  " RBT / |SHUTDWN|"
     top_line = "ERROR:  " + format_length(code, 8)
     current_select = False
 
     while True:
-        if current_select == True:
-            bottom_line = "|RBT| / SHUTDWN "
-        else:
-            bottom_line = " RBT / |SHUTDWN|"
-
+        bottom_line = (reboot_txt if current_select else shutdown_txt)
         update_display(top_line, bottom_line)
 
         choose = button_input()
+
         if choose == "cycle":
-            if current_select == True:
-                current_select = False
-            else:
-                current_select = True
+            # toggle variable
+            current_select ^= True
 
         elif choose == "select":
-            if current_select == True:
-                con_reboot()
-                break
-            elif current_select == False:
-                con_shutdown()
-                break
+            # use appropriate shutdown/reboot function
+            (con_reboot if current_select else con_shutdown)()
+            break;
 
 def dsp_error_fatal(code):
     # Handle fatal errors
@@ -388,6 +382,7 @@ def error(e_code, data=True, add_data=False):
     }
 
     try:
+        # get function associated with this type of error
         error_type = error_codes[e_code[1]][0]
     except:
         # ecode isn't correct, input must have been wrong
@@ -398,6 +393,8 @@ def error(e_code, data=True, add_data=False):
         # If error code is correct
         code = e_code[1]
         max_error_len = 14
+
+        # light error processing lamp
         GPIO.output(GPIO_LAMP, GPIO.HIGH)
         error_start = error_codes[code][1]
         new_error = "- " + error_start.ljust(max_error_len, " ") + " ("+str(e_code)+")"
@@ -408,18 +405,20 @@ def error(e_code, data=True, add_data=False):
             error_def = error_decoder(e_code[1:])
             new_error += str(error_def)
 
-            # request to add the data param to the error readout
+            # request to add the data param to the errotyul;r readout
             if (add_data == True):
                 new_error += " => " + str(data)
 
 
 
-        # display error in consol and add to errorlog
+        # display error in console and add to errorlog
         print(new_error)
-        pave_file.append("errorlog.txt", new_error)
+        pave.file.append("errorlog.txt", new_error)
 
         #run associated error function
         error_type(e_code)
+
+        # kill lamp
         GPIO.output(GPIO_LAMP, GPIO.LOW)
 
     else:
@@ -434,30 +433,27 @@ def dsp_menu(func_dict, menu_title, allow_kill=False):
 
     # selection loop
     while True:
+
         # get function address and name for current index
         if current_select in func_dict:
             current_func_name, current_func = func_dict[current_select]
 
         else:
             # this shouldn't occur in normal use, only if I forget to add index
-            if current_select != len(func_dict):
-                current_select += 1
-            else:
-                current_select = 1
+            current_select = (1 if current_select == len(func_dict) else current_select + 1)
 
         # display menu status
-        title = menu_title + ":"
+
         top_line = format_length(menu_title, 11) + format_length(str(current_select) + "/" + str(len(func_dict)),5, alignment="RIGHT")
         bottom_line = "=> " + format_length(current_func_name, 12)
         update_display(top_line, bottom_line)
 
         # get user input for selection
         choose = button_input(True)
+
         if choose == "cycle":
-            if current_select != len(func_dict):
-                current_select += 1
-            else:
-                current_select = 1
+            current_select = (1 if current_select == len(func_dict) else current_select + 1)
+
         elif choose == "back":
             break
 
@@ -465,9 +461,8 @@ def dsp_menu(func_dict, menu_title, allow_kill=False):
             current_func()
 
         # check if need to exit for kill reasons
-        if allow_kill:
-            if sys_main_status() == "KILL":
-                break
+        if (allow_kill and sys_main_status() == "KILL"):
+            break
 
 # General Functions
 def confirm(message):
@@ -543,14 +538,16 @@ def update_display(top_line, bottom_line, force_hotrun=False):
 
     elif not hot_run:
         update_display(format_length("-|   HOTRUN   |-"), format_length("-|  DISABLED  |-"), force_hotrun=True)
+        t ={format_length(str(bottom_line), DEFAULTLEN)}
         print("")
         print(" ________________")
-        print("|" + str(top_line) + "|")
-        print("|" + format_length(str(bottom_line), DEFAULTLEN) + "|")
+        print(f"|{str(top_line)}|        ({sys_status_graphic(GPIO_MISSILE)}) ({sys_status_graphic(GPIO_ARM)})")
+        print(f"|{t}|")
         print("|________________|\n")
         return 1
 
     else:
+        # issue with hotrun STATUS
         error("E107")
 
 
@@ -703,24 +700,20 @@ def wait_select(slowdown=False):
 def yesno(message):
     # Basic bool select function, returns bool value
     top_line = message
+    yes, no = "    |Y| / N     ", "     Y / |N|    "
     for i in range(DEFAULTLEN - len(message)):
         top_line += " "
+
     current_select = False
     while True:
-        if current_select == True:
-            bottom_line = "    |Y| / N     "
-        else:
-            bottom_line = "     Y / |N|    "
-
+        bottom_line = (yes if current_select else no)
         update_display(top_line, bottom_line)
 
         choose = button_input()
+
         if choose == "cycle":
             # Invert current select flag
-            if current_select == True:
-                current_select = False
-            else:
-                current_select = True
+            current_select ^= True
 
         elif choose == "select":
             return current_select
@@ -729,14 +722,75 @@ def yesno(message):
             break
 
 
+def sys_parkes_intro():
+    # quick animation to spice things up
+
+    title = "PARKES"
+    name = "J.Woodman"
+    MAX = 5
+    MIN = 3
+    top_line = 5*" " + title + 5*" "
+    # waves
+    for go in range(MIN):
+        place = 0
+        # bottom line
+        b_middle = ""
+
+        # if second iteration (go=1) show vers
+        if (go == 2):
+            b_middle = format_length(internal_version, length=6)
+            last = ""
+        else:
+            b_middle = 6*" "
+
+        for i in range(3):
+            # might be the ugliest line of code i've ever written
+            side = (MAX*" ") + (MAX-i*" ") + "|" + (i-MIN*" ")
+            expansion_result = side + b_middle[MIN-i:MIN+i] + side[::-1]
+            update_display(format_length(top_line), format_length(bottom_line))
+            sleep(0.1)
+
+
+        for i in range(5):
+            line = []
+            for space in range(5):
+                line.append(("|" if (space == place) else " "))
+
+            place += 1
+            left, right = "".join(line[::-1]), "".join(line)
+
+            top_line = left + title + right
+            bottom_line = left + 6*" " + right
+
+            update_display(format_length(top_line), format_length(bottom_line))
+            sleep(0.1)
+
+
+    # slide over
+    sleep(1)
+    x, y, z = 5, 5, 3
+
+    for i in range(6):
+        top_line = x*" " + title + y*" "
+        bottom_line = z*" " + name + x*" "
+        x-=1
+        y+=1
+        z+=3
+        update_display(format_length(top_line), format_length(bottom_line))
+        sleep(0.08)
+    sleep(2)
+
 
 def sys_startup_animation():
     # Loading bar, will tie into actual progress soon
+
     count = 0
     sleep(0.3)
 
+
+
     for i in range(11):
-        time_del = float(randint(1,5)/40)
+        time_del = 0.001 + (0.001 *random.randint(1, 5))
         filler = ""
         for i in range(count):
             filler += "="
@@ -758,20 +812,18 @@ def sys_startup():
 
     # set uptime start
     configuration["start_time"] = time.time()
-
     error("E904", "Startup initiated")
-
     sleep(1)
-    update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN),  format_length("loading", DEFAULTLEN), force_hotrun=True)
-    sleep(0.4)
 
     # Assign ID number
     configuration["parkes_id"] = cfg_id_gen()
 
 
-
+    sys_parkes_intro()
+    update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN),  format_length("loading", DEFAULTLEN), force_hotrun=True)
+    sleep(0.4)
     sys_startup_animation()
-    update_display(format_length("", DEFAULTLEN), format_length(" READY", DEFAULTLEN))
+    update_display(format_length("PARKES v" + str(parkes_version), DEFAULTLEN), format_length(" READY", DEFAULTLEN))
     sleep(1.2)
     GPIO.output(GPIO_LIGHT, GPIO.LOW)
     GPIO.output(GPIO_LAMP, GPIO.LOW)
@@ -812,10 +864,12 @@ def con_shutdown():
 def dsp_format_uptime():
     c_uptime = time.time() - configuration["start_time"]
 
+    # format for minutes
     if (c_uptime > 60):
         n_uptime = c_uptime / 60
         classifier = "mins"
     else:
+        #format for seconds
         n_uptime = c_uptime
         classifier = "secs"
 
@@ -883,10 +937,7 @@ def con_display():
         choose = button_input()
 
         if choose == "cycle":
-            if current != (len(conf_list) - 1):
-                current += 1
-            else:
-                current = 0
+            current = (0 if current == (len(conf_list)-1) else current + 1)
 
         elif choose == "select":
             top_line = format_length(current_con, DEFAULTLEN-5)+ ": "
@@ -925,12 +976,11 @@ def cne_status():
         choose = button_input()
 
         if choose == "cycle":
-            if current != (len(cne_list) - 1):
-                current += 1
-            else:
-                current = 0
+            current = (0 if current == (len(cne_list)-1) else current + 1)
+
         elif choose == "back":
             break
+        
         elif (choose == "select"):
             top_line = format_length(top_line, DEFAULTLEN-5)+ ": "
             dsp_scroll_tool(top_line, con_line)
@@ -1000,7 +1050,7 @@ def cne_receive(override_timeout=False, timeout_set=5):
     # Receives for command from parkes_radio - waits indefinitely
     # unless timeout is specified
 
-    if override_timeout:
+    if (override_timeout):
         parkes_radio.timeout = timeout_set
         data = parkes_radio.read_until()
         to_return = data
@@ -1055,7 +1105,7 @@ def cne_heartbeat():
     receiving = True
     heartbeat_init_vamp = (10000, 0000, 8, 00000)
 
-    pave_comms.send(heartbeat_init_vamp, parkes_radio)
+    pave.comms.send(heartbeat_init_vamp, parkes_radio)
 
     hb_count = 0
     if (hb_count < 0):
@@ -1068,7 +1118,7 @@ def cne_heartbeat():
     while configuration["telemetry"]["hb_force_kill"] == False:
         #GPIO.output(GPIO_LAMP, GPIO.HIGH)
 
-        rec_vamp = pave_comms.receive(parkes_radio)
+        rec_vamp = pave.comms.receive(parkes_radio)
         configuration["telemetry"]["hb_data"].append(rec_vamp)
         configuration["telemetry"]["hb_pid"] = int(rec_vamp[3])
         #GPIO.output(GPIO_LAMP, GPIO.LOW)
@@ -1127,8 +1177,7 @@ def cne_heartbeat_confirmation():
     # Waits for hb conf from Vega, supports timeout of 5 seconds
     rec_con = False
     while rec_con == False:
-        result = pave_comms.receive(parkes_radio, timeout=True, timeout_duration=5)
-
+        result = pave.comms.receive(parkes_radio, timeout=True, timeout_duration=5)
 
         if (get_vamp(result, "m") == 8):
             error("E912", "Heartbeat confirmation received")
@@ -1141,7 +1190,6 @@ def cne_heartbeat_confirmation():
 
         elif (result == "unknown failure"):
             print(result)
-
 
 
 def dsp_handshake(status):
@@ -1192,7 +1240,7 @@ def cne_handshake():
     handshake_vamp = (10000, 1000, 8, 00000)
 
     # Loop to send handshake / await response
-    pave_comms.send(handshake_vamp, parkes_radio)
+    pave.comms.send(handshake_vamp, parkes_radio)
 
     # Might need to put some sort of stopper here, in case it just steamrolls ahead
     heartbeat_conf_result =  cne_heartbeat_confirmation()
@@ -1207,7 +1255,7 @@ def cne_kill_heartbeat():
     global configuration
 
     kill_hb = (10000, 1000, 8, 00000)
-    pave_comms.send(kill_hb, parkes_radio)
+    pave.comms.send(kill_hb, parkes_radio)
 
     configuration["telemetry"]["hb_force_kill"] = True
     error("E914", "Hb_force_kill is True, joining thread...")
@@ -1229,9 +1277,11 @@ def cne_upload_config(params):
     dsp_upload_config("uploading")
     command, param_len = "", len(params)
     param_count = 0
+
     for update in params:
         param_count += 1
         command += "|" + update
+
     command += "\n"
     parkes_radio.write(command.encode())
     sleep(0.5)
@@ -1253,40 +1303,48 @@ def cne_upload_config(params):
 def dsp_upload_config(status, data=False):
     # Moves param list to parkes_radio for upload to vega
     top_line = format_length("VFS UPDATE TOOL")
-    if status == "uploading":
-        bottom_line = "uploading..."
-    elif status == "complete":
-        bottom_line = "complete!"
+    messages = {
+        "uploading" : "uploading...",
+        "complete"  : "complete!",
+        "total"     : "failed to update"
+    }
+
+    if (status in messages.keys()):
+        bottom_line = messages[status]
     elif status == "partial":
         if data:
-            con_count, param_coun = data
+            con_count, param_count = data
             fract = con_count + "/" + param_count
             bottom_line = "partial: "+ data
         else:
             bottom_line = "partial: unknown"
             error("E322")
-    elif status == "total":
-        bottom_line = "failed to update"
+    else:
+        error("E323", status)
 
     update_display(top_line, format_length(bottom_line))
 
 
 
 def dsp_hb_view(status):
-    if status == True:
+    if (status == True):
         while True:
             run_view = True
             top_line = format_length("HEARTBEAT:  LIVE")
             init_time = time.time()
             sig = str(int(configuration["telemetry"]["hb_sigstrn"])) + "%"
-            if len(sig) < 4:
+
+
+            if (len(sig) < 4):
                 sig = " "+sig
             final_sig = "sig:"+sig
 
             pid = configuration["telemetry"]["hb_pid"]
             builder = ""
+
             for i in range(5-len(str(pid))):
                 builder += "0"
+
             builder += str(pid)
             final_pid = "P:"+builder
             bottom_line = final_sig + " " + final_pid
@@ -1381,7 +1439,7 @@ def cne_vfs_compiler():
      confirm("VFS LOG COMPILER")
 
      # Loop to send handshake / await response
-     pave_comms.send(compile_vamp, parkes_radio)
+     pave.comms.send(compile_vamp, parkes_radio)
      confirm("COMMAND SENT")
 
 
@@ -1619,7 +1677,7 @@ def lch_parkes_fire():
             bottom_line = format_length("key to arm...")
             armed = False
 
-        if armed and sys_check_launch():
+        if armed and sys_check_status(GPIO_LAUNCH):
             hold = False
         sleep(0.2)
 
@@ -1775,18 +1833,14 @@ def dsp_arm_sequence(hold=True, armed=False):
 
         dsp_arm_status(mis_status, key_status)  # show gui for arm stat
 
-        if sys_check_status(GPIO_ARM) and sys_check_status(GPIO_MISSILE):
-            # both arms triggered, ready for button press
-            armed = True
-
-        else:
-            armed = False
+        # both arms triggered, ready for button press
+        armed = (sys_check_status(GPIO_ARM) and sys_check_status(GPIO_MISSILE))
 
         # ready to enter coutndown
-        if armed and sys_check_launch():
+        if armed and sys_check_status(GPIO_LAUNCH):
             hold = False
 
-        elif not armed and sys_check_launch():
+        elif not armed and sys_check_status(GPIO_LAUNCH):
             # allow to leave launch arm sequence
             end_seq = confirm("END SEQUENCE?")
             if end_seq:
@@ -1850,9 +1904,6 @@ def lch_epoch_fire():
 
     # end of hotfire, cleanup
     sys_set_output(GPIO_LIGHT, False)
-
-
-
 
 
 def lch_flight_configure():
@@ -1919,22 +1970,25 @@ def lch_countdown():
     continue_launch = True
 
     for second in range(11):
-        current = str(10 - count).zfill(2)
+        s = "s" * (second > 1)
+        current = str(10 - second).zfill(2)
         top_line = format_length("    COUNTDOWN   ")
         bottom_line = format_length("      |"+current+"|      ")
         update_display(top_line, bottom_line)
 
         qc_results = lch_quick_check()
         if not qc_results:
+            
             continue_launch = False
-            error("E295", qc_results)
+            error("E293", f"(failed at t-{second}{s}) " + qc_results)
             sleep(3)
             break
         sleep(0.95)
         qc_results = lch_quick_check()
+        
         if not qc_results:
             continue_launch = False
-            error("E295", qc_results)
+            error("E294", f"(failed at t-{second}{s}) " + qc_results)
             sleep(3)
             break
 
@@ -1992,11 +2046,11 @@ def lch_preflight_all():
     attempts = 0
     while True:
         epoch_pre = (0, 2000, 0, 10000)
-        pave_comms.send(epoch_pre, parkes_radio)
+        pave.comms.send(epoch_pre, parkes_radio)
 
         error("E983")
         sleep(0.3)
-        epoch_poll_results = pave_comms.receive(parkes_radio, True)
+        epoch_poll_results = pave.comms.receive(parkes_radio, True)
 
         if (get_vamp(epoch_poll_results, "p") == 11111):
             error("E298", str(epoch_poll_results))
@@ -2028,13 +2082,13 @@ def lch_preflight_all():
         dsp_preflight_show()
 
         vega_pre = (0, 2000, 0, 00000)
-        pave_comms.send(vega_pre, parkes_radio)
+        pave.comms.send(vega_pre, parkes_radio)
 
         sleep(0.3)
         loop_start = time.time()
         while True:
             error("E984")
-            vega_confirmed = pave_comms.receive(parkes_radio, True, 10)
+            vega_confirmed = pave.comms.receive(parkes_radio, True, 10)
 
             if (get_vamp(vega_confirmed, "a") == 0):
                 # vega has confirmed poll receipt
@@ -2067,7 +2121,7 @@ def lch_preflight_all():
 
         # check if worth continuing anyway
         if continue_poll:
-            vega_poll_results = pave_comms.receive(parkes_radio, True)
+            vega_poll_results = pave.comms.receive(parkes_radio, True)
 
             if (get_vamp(vega_poll_results, "p") == 21111):
 
@@ -2194,7 +2248,7 @@ def lch_launch_program():
             sys_set_output(GPIO_LIGHT, False)
 
     else:
-        if (continue_launch == True) and (code != launch_commit_code + inc_amount):
+        if (continue_launch) and (code != launch_commit_code + inc_amount):
             error("E944", f"{code} != {launch_commit_code} + {inc_amount}")
 
         else:
@@ -2211,7 +2265,7 @@ def lch_force_launch():
     confirm("FORCE CMMND SENT")
 
     # Loop to send handshake / await response
-    pave_comms.send(force_vamp, parkes_radio)
+    pave.comms.send(force_vamp, parkes_radio)
     sleep(0.2)
     dsp_downlink()
 
@@ -2223,7 +2277,7 @@ def lch_vega_demo():
     confirm("FORCE LOOP SENT")
 
     # Loop to send handshake / await response
-    pave_comms.send(force_vamp, parkes_radio)
+    pave.comms.send(force_vamp, parkes_radio)
     sleep(0.2)
     dsp_downlink(True)
 
@@ -2232,7 +2286,7 @@ def lch_arm():
     cne_open_port(False)
     arm_vamp = (10000, 1000, 0, 00000)
     # Loop to send handshake / await response
-    pave_comms.send(arm_vamp, parkes_radio)
+    pave.comms.send(arm_vamp, parkes_radio)
 
 def dsp_downlink(demo=False):
     global configuration
@@ -2257,11 +2311,11 @@ def dsp_downlink(demo=False):
     exit_triggers = [6, 7]
 
     # Designed as a lightweight function to display data directly
-    while downlinking:
+    while (downlinking):
 
         if not (configuration["telemetry"]["port_open"]):
             cne_open_port()
-        incoming = pave_comms.receive(parkes_radio, True, 5)
+        incoming = pave.comms.receive(parkes_radio, True, 5)
 
         if (incoming != "timeout"):
 
@@ -2380,11 +2434,8 @@ def sys_type_get(newval):
 
             return "float"
         except ValueError:
-            if newval != "True\n" and newval != "False\n":
-                return "string"
+            return ("string" if  newval != "True\n" and newval != "False\n" else "bool")
 
-            else:
-                return "bool"
 
 def sys_startup_tests(ex_value, config_vals):
     # Startup test functions, don't fuck with these
@@ -2411,19 +2462,16 @@ def cfg_type_set(definition):
 
     def_type = sys_type_get(definition)
 
-    if def_type == "int":
+    if (def_type == "int"):
         return int(definition)
 
-    elif def_type == "bool":
-        if definition == "True":
-            return True
-        else:
-            return False
+    elif (def_type == "bool"):
+        return (True if (definition == "True") else False)
 
-    elif def_type == "float":
+    elif (def_type == "float"):
         return float(definition)
 
-    elif def_type == "string":
+    elif (def_type == "string"):
         return str(definition)[:-1]
 
 def cfg_set_value(content):
@@ -2484,7 +2532,7 @@ def cfg_errlog(data):
     # error log configuration functions
     global configuration
     if data == "init":
-        pave_file.create("errorlog.txt", "PARKES ERROR LOG", "Parkes", internal_version, id=configuration["parkes_id"])
+        pave.file.create("errorlog.txt", "PARKES ERROR LOG", "Parkes", internal_version, id=configuration["parkes_id"])
 
     elif data == "clear":
         new_file = open("parkes_errorlog.txt", "w")
@@ -2537,7 +2585,7 @@ def cfg_id_gen():
 
     for digit in range(ID_LEN):
         # create random digit from 0-9
-        new_digit = str(randint(0,9))
+        new_digit = str(random.randint(0,9))
         id += new_digit
 
     return id
@@ -2552,8 +2600,6 @@ def sys_config_interpreter(config_file):
         "!" : "value",
         "$" : "command"
     }
-
-
 
     #possible configuration commands
     config_commands = {
@@ -2762,7 +2808,7 @@ while sys_main_status() == "REBOOT":
     sys_config_interpreter(config_file)
 
     # run startup tests if required
-    if run_startup_test:
+    if (run_startup_test):
         sys_startup_test()
 
     config_file.close()
@@ -2770,7 +2816,6 @@ while sys_main_status() == "REBOOT":
     lcd.clear()
 
     sys_main_menu()
-
 
 
 # If we're here, we've left the running loop. Time to clean up.
